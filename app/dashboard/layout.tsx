@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Package, ShoppingBag, MessageSquare, Tag, Megaphone, BarChart3, Sparkles, Settings } from "lucide-react";
 import ShopSwitcher from "@/components/ShopSwitcher";
+import LogoutButton from "@/components/LogoutButton";
 
 const tabs = [
   { href: "/dashboard/products", label: "Products", icon: Package },
@@ -37,10 +38,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </Link>
           ))}
         </nav>
-        <div className="px-3 py-3 border-t">
+        <div className="px-3 py-3 border-t flex items-center justify-between">
           <Link href="/connect" className="text-sm text-gray-500 hover:text-shopee">
             + Connect another shop
           </Link>
+          <LogoutButton />
         </div>
       </aside>
       <main className="flex-1 p-8">{children}</main>
