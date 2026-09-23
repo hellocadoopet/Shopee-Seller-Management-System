@@ -177,14 +177,14 @@ app.get("/products", async (c) => {
 
   // 1. Item IDs (list endpoint has no prices)
   const list = await getItemList(auth.accessToken, auth.shopeeShopId, 0, 100);
-  const ids = list.item.map((i) => i.item_id);
+  const ids = (list.item ?? []).map((i) => i.item_id);
   if (!ids.length) return c.json({ items: [] });
 
   // 2. Names, prices, stock in batches of 50
   const base: ShopeeItemBase[] = [];
   for (let i = 0; i < ids.length; i += 50) {
     const r = await getItemBaseInfo(auth.accessToken, auth.shopeeShopId, ids.slice(i, i + 50));
-    base.push(...r.item_list);
+    base.push(...(r.item_list ?? []));
   }
 
   const items = base.map((b) => ({
@@ -219,7 +219,7 @@ app.get("/vouchers", async (c) => {
   if (!shopId) return noShop(c);
   const auth = await getFreshAccessToken(shopId);
   const res = await getVoucherList(auth.accessToken, auth.shopeeShopId, "all");
-  return c.json({ vouchers: res.voucher_list });
+  return c.json({ vouchers: res.voucher_list ?? [] }); // Shopee sends null when there are none
 });
 
 app.get("/ads", async (c) => {
@@ -280,7 +280,7 @@ app.get("/chat/messages", async (c) => {
   if (!conversationId) return c.json({ error: "conversation_id required" }, 400);
   const auth = await getFreshAccessToken(shopId);
   const res = await getMessageList(auth.accessToken, auth.shopeeShopId, conversationId);
-  return c.json({ messages: res.messages });
+  return c.json({ messages: res.messages ?? [] });
 });
 
 app.post("/chat/send", async (c) => {

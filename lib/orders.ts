@@ -23,7 +23,7 @@ export async function fetchOrders(shopUuid: string, daysBack: number): Promise<S
     let cursor = "";
     do {
       const list = await getOrderList(auth.accessToken, auth.shopeeShopId, from, to, cursor);
-      orderSns.push(...list.order_list.map((o) => o.order_sn));
+      orderSns.push(...(list.order_list ?? []).map((o) => o.order_sn));
       cursor = list.more && list.next_cursor ? list.next_cursor : "";
     } while (cursor);
   }
@@ -35,7 +35,7 @@ export async function fetchOrders(shopUuid: string, daysBack: number): Promise<S
   for (let i = 0; i < orderSns.length; i += 50) {
     const chunk = orderSns.slice(i, i + 50);
     const detail = await getOrderDetail(auth.accessToken, auth.shopeeShopId, chunk);
-    orders.push(...detail.order_list);
+    orders.push(...(detail.order_list ?? []));
   }
 
   return orders;
