@@ -15,12 +15,18 @@ Single owner, multiple shops. Not a multi-tenant SaaS.
 | **Overview** | Paid orders + revenue today (MY time), unread chats, product count, low-stock list | Live from Shopee; each card loads independently |
 | **Products** | List items, see price + stock, **edit price inline** | Editing writes to real Shopee |
 | **Orders** | Orders from the last 14 days | Live from Shopee |
-| **Chat** | Paste a buyer message → get an AI-drafted reply → send | You approve before sending |
+| **Chat** | One inbox across all shops: open a thread → AI-drafted reply → edit → send | You approve before sending; replies go out from the conversation's own shop |
 | **Vouchers** | List shop vouchers & discounts | Create coming next |
 | **Campaigns** | View Shopee campaign join status | Read-only (Shopee-run) |
 | **Ads** | Ad performance table | Read-only; report endpoint WIP |
 | **Insights** | Sales by product, market-basket pairs, order-size distribution | Last 30 days, computed live from Shopee |
 | **Settings** | Shows which AI is configured + test button | Set via env vars |
+
+### Multiple shops
+- A **shop filter** sits at the top of every page: **All shops** (default) or one shop. It lives in the URL (`?shop=`), so each browser tab keeps its own view and links are shareable.
+- In "All shops" view every row carries a coloured **shop badge**; Overview adds a per-shop breakdown.
+- **Edits always target the row's own shop** (price edits, chat replies) — never whatever the filter says.
+- If one shop fails (e.g. its token expired), a red banner names it and the other shops still load.
 
 ### AI customer replies
 - **Rules first:** keyword → template (instant, free). Rules live in `config/chatbot.json`.
@@ -75,6 +81,7 @@ npm run dev
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase secret key (server only) |
 | `TOKEN_ENCRYPTION_KEY` | 32-byte base64 — encrypts stored Shopee tokens |
 | `LOW_STOCK_THRESHOLD` | Optional — Overview flags items at or below this stock (default 5) |
+| `MOCK_CHAT` | Dev only — `true` serves seeded buyer chats (sandbox has none). Never set in production |
 | `APP_PASSWORD` | Login password for the app. **Empty = no lock (local dev).** |
 | `LLM_PROVIDER` | Optional — which AI writes chat replies: `claude` (default), `openai`, or `deepseek` |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` | Optional — one key per provider; only the one `LLM_PROVIDER` picks is used |

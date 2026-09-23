@@ -1,4 +1,7 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useShopParam } from "../lib/shops";
+import { useFetch, type ShopList, type Tagged } from "../lib/useFetch";
+import { ShopBadge, ShopErrors, useMultiShop } from "../components/Shop";
 
 interface Item {
   item_id: number;
@@ -9,38 +12,29 @@ interface Item {
   price: number | null;
   stock: number | null;
 }
+type Row = Tagged<Item>;
+
+const LOW_STOCK = 5; // matches the Overview default (LOW_STOCK_THRESHOLD)
+const key = (it: Row) => `${it.shop_id}:${it.item_id}`;
 
 export default function ProductsPage() {
-  const [items, setItems] = useState<Item[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [shop] = useShopParam();
+  const multi = useMultiShop();
+  const { data, error, loading, reload } = useFetch<ShopList<Item>>(`/api/products?shop=${shop}`);
 
-  // inline price edit state
-  const [editingId, setEditingId] = useState<number | null>(null);
+  const [query, setQuery] = useState("");
+  const [lowOnly, setLowOnly] = useState(false);
+  const [editing, setEditing] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState<Record<string, number>>({}); // optimistic prices after a successful save
 
-  function load() {
-    setLoading(true);
-    setError(null);
-    fetch("/api/products")
-      .then(async (r) => {
-        if (!r.ok) throw new Error(await r.text());
-        return r.json();
-      })
-      .then((d: { items: Item[] }) => setItems(d.items))
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false));
-  }
+  const items = (data?.items ?? [])
+    .map((it) => (saved[key(it)] != null ? { ...it, price: saved[key(it)]! } : it))
+    .filter((it) => !query || `${it.item_name} ${it.item_sku}`.toLowerCase().includes(query.toLowerCase()))
+    .filter((it) => !lowOnly || (it.stock != null && it.stock <= LOW_STOCK));
 
-  useEffect(load, []);
-
-  function startEdit(it: Item) {
-    setEditingId(it.item_id);
-    setEditValue(it.price != null ? String(it.price) : "");
-  }
-
-  async function savePrice(it: Item) {
+  async function savePrice(it: Row) {
     const newPrice = Number(editValue);
     if (!newPrice || newPrice <= 0) {
       alert("Enter a valid price greater than 0");
@@ -51,16 +45,14 @@ export default function ProductsPage() {
       const r = await fetch("/api/products", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          item_id: it.item_id,
-          price_list: [{ original_price: newPrice }],
-        }),
+        // shop_id comes from the row, not the filter — the edit always hits this item's own shop
+        body: JSON.stringify({ shop_id: it.shop_id, item_id: it.item_id, price_list: [{ original_price: newPrice }] }),
       });
       if (!r.ok) throw new Error(await r.text());
-      setItems((prev) => prev.map((p) => (p.item_id === it.item_id ? { ...p, price: newPrice } : p)));
-      setEditingId(null);
+      setSaved((s) => ({ ...s, [key(it)]: newPrice }));
+      setEditing(null);
     } catch (e) {
-      alert("Failed to update price: " + String(e));
+      alert(`Failed to update price on ${it.shop_name}: ${String(e)}`);
     } finally {
       setSaving(false);
     }
@@ -68,21 +60,36 @@ export default function ProductsPage() {
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex justify-between items-center mb-4">
         <h1 className="text-2xl font-semibold">Products</h1>
-        <button onClick={load} className="px-3 py-1.5 text-sm rounded-md border border-gray-200 hover:bg-gray-50">
+        <button onClick={reload} className="px-3 py-1.5 text-sm rounded-md border border-gray-200 hover:bg-gray-50">
           Refresh
         </button>
       </div>
 
+      <div className="flex flex-wrap gap-3 mb-4">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search name or SKU…"
+          className="border border-gray-200 rounded-md px-3 py-1.5 text-sm w-64"
+        />
+        <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" checked={lowOnly} onChange={(e) => setLowOnly(e.target.checked)} />
+          Low stock only (≤ {LOW_STOCK})
+        </label>
+      </div>
+
+      <ShopErrors errors={data?.errors} />
       {loading && <p className="text-gray-500">Loading from Shopee…</p>}
       {error && <p className="text-red-600 text-sm mb-4">Error: {error}</p>}
 
-      {!loading && !error && (
+      {data && (
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-gray-600">
               <tr>
+                {multi && <th className="text-left px-4 py-3">Shop</th>}
                 <th className="text-left px-4 py-3">Item</th>
                 <th className="text-left px-4 py-3">SKU</th>
                 <th className="text-right px-4 py-3">Price (RM)</th>
@@ -93,11 +100,16 @@ export default function ProductsPage() {
             </thead>
             <tbody>
               {items.map((it) => (
-                <tr key={it.item_id} className="border-t border-gray-100">
+                <tr key={key(it)} className="border-t border-gray-100">
+                  {multi && (
+                    <td className="px-4 py-3">
+                      <ShopBadge shopId={it.shop_id} name={it.shop_name} />
+                    </td>
+                  )}
                   <td className="px-4 py-3 font-medium">{it.item_name}</td>
                   <td className="px-4 py-3 text-gray-500">{it.item_sku || "—"}</td>
                   <td className="px-4 py-3 text-right">
-                    {editingId === it.item_id ? (
+                    {editing === key(it) ? (
                       <input
                         type="number"
                         value={editValue}
@@ -115,14 +127,18 @@ export default function ProductsPage() {
                       "—"
                     )}
                   </td>
-                  <td className="px-4 py-3 text-right">{it.stock ?? "—"}</td>
+                  <td
+                    className={`px-4 py-3 text-right ${
+                      it.stock === 0 ? "text-red-600 font-semibold" : it.stock != null && it.stock <= LOW_STOCK ? "text-amber-600 font-semibold" : ""
+                    }`}
+                  >
+                    {it.stock ?? "—"}
+                  </td>
                   <td className="px-4 py-3">
-                    <span className="px-2 py-0.5 rounded-full bg-green-100 text-green-700 text-xs">
-                      {it.item_status}
-                    </span>
+                    <span className="px-2 py-0.5 rounded-full bg-green-100 text-green-700 text-xs">{it.item_status}</span>
                   </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
-                    {editingId === it.item_id ? (
+                    {editing === key(it) ? (
                       <>
                         <button
                           onClick={() => savePrice(it)}
@@ -131,13 +147,19 @@ export default function ProductsPage() {
                         >
                           {saving ? "…" : "Save"}
                         </button>
-                        <button onClick={() => setEditingId(null)} className="text-gray-400 hover:underline">
+                        <button onClick={() => setEditing(null)} className="text-gray-400 hover:underline">
                           Cancel
                         </button>
                       </>
                     ) : (
                       !it.has_model && (
-                        <button onClick={() => startEdit(it)} className="text-shopee hover:underline">
+                        <button
+                          onClick={() => {
+                            setEditing(key(it));
+                            setEditValue(it.price != null ? String(it.price) : "");
+                          }}
+                          className="text-shopee hover:underline"
+                        >
                           Edit price
                         </button>
                       )
@@ -147,8 +169,8 @@ export default function ProductsPage() {
               ))}
               {!items.length && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-gray-400">
-                    No products.
+                  <td colSpan={multi ? 7 : 6} className="px-4 py-8 text-center text-gray-400">
+                    {query || lowOnly ? "No products match." : "No products."}
                   </td>
                 </tr>
               )}
@@ -158,8 +180,8 @@ export default function ProductsPage() {
       )}
 
       <p className="text-xs text-gray-400 mt-4">
-        Variant products (multiple options) show "variants" — editing each variant price comes later.
-        Single products can be edited inline here.
+        {items.length} shown{data ? ` of ${data.items.length}` : ""}. Variant products show "variants" — per-variant
+        editing comes later.
       </p>
     </div>
   );

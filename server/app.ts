@@ -1,9 +1,9 @@
 import crypto from "node:crypto";
-import { Hono, type Context } from "hono";
+import { Hono } from "hono";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { config, assertConfig } from "../lib/config";
 import { computeAuthToken, isLockEnabled } from "../lib/appAuth";
-import { CURRENT_SHOP_COOKIE, getCurrentShopId } from "../lib/currentShop";
+import { listShops, merge, perShop, resolveShops, type Shop } from "../lib/shops";
 import { supabase } from "../lib/supabase";
 import { getFreshAccessToken, saveTokens } from "../lib/tokens";
 import {
@@ -11,14 +11,12 @@ import {
   exchangeCodeForToken,
   getShopInfo,
   getAdsPerformance,
-  getConversationList,
-  getMessageList,
   getVoucherList,
-  sendMessage,
   updateItemPrice,
 } from "../lib/shopee";
 import { fetchOrders } from "../lib/orders";
 import { listProducts } from "../lib/products";
+import { listConversations, listMessages, send } from "../lib/chat";
 import { computeBasket, orderSizeBucket } from "../lib/analytics";
 import { matchRule, rules, suggestReply } from "../lib/chatbot";
 import { generateReply, getLlmConfig, KEY_ENV } from "../lib/llm";
@@ -121,9 +119,8 @@ app.get("/shopee/callback", async (c) => {
 
     await saveTokens(shop.id, tokens.access_token, tokens.refresh_token, tokens.expire_in);
 
-    setCookie(c, CURRENT_SHOP_COOKIE, shop.id, { sameSite: "Lax", maxAge: 60 * 60 * 24 * 365, path: "/" });
     deleteCookie(c, "shopee_oauth_state", { path: "/" });
-    return c.redirect("/dashboard");
+    return c.redirect(`/dashboard?shop=${shop.id}`);
   } catch (e) {
     return fail(`Shopee error: ${String(e)}`);
   }
@@ -153,97 +150,124 @@ app.post("/shopee/webhook", async (c) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// Shop data
+// Shop data. Reads take `?shop=all` (default) or `?shop=<uuid>` and fan out per shop in
+// parallel; list responses are `{ items, errors }` with every row tagged shop_id/shop_name.
+// Writes take `shop_id` explicitly — never an implicit "current shop" — so an edit always
+// lands on the shop of the row it was made from.
 // ─────────────────────────────────────────────────────────────
 
-app.get("/shops", async (c) => {
-  const { data, error } = await supabase
-    .from("shops")
-    .select("id, shopee_shop_id, shop_name, region, connected_at")
-    .is("disconnected_at", null)
-    .order("connected_at", { ascending: false });
-  if (error) return c.json({ error: error.message }, 500);
-  return c.json({ shops: data ?? [] });
-});
+app.get("/shops", async (c) => c.json({ shops: await listShops() }));
 
 const daysAgo = (days: number) => Math.floor(Date.now() / 1000) - days * 86400;
+const shopsOf = (c: { req: { query: (k: string) => string | undefined } }) => resolveShops(c.req.query("shop"));
 
-const shopOf = (c: Context) => getCurrentShopId(getCookie(c, CURRENT_SHOP_COOKIE));
-const noShop = (c: Context) => c.json({ error: "no shop connected" }, 400);
+/** Resolve the single shop a write targets; null → caller returns 400. */
+async function writeTarget(shopId: string | undefined): Promise<Shop | null> {
+  if (!shopId) return null;
+  return (await listShops()).find((s) => s.id === shopId) ?? null;
+}
 
 app.get("/products", async (c) => {
-  const shopId = await shopOf(c);
-  if (!shopId) return noShop(c);
-  return c.json({ items: await listProducts(await getFreshAccessToken(shopId)) });
+  return c.json(merge(await perShop(await shopsOf(c), (_, auth) => listProducts(auth))));
 });
 
 app.post("/products", async (c) => {
-  const shopId = await shopOf(c);
-  if (!shopId) return noShop(c);
-  const body = await c.req.json<{ item_id: number; price_list: Array<{ model_id?: number; original_price: number }> }>();
-  const auth = await getFreshAccessToken(shopId);
+  const body = await c.req.json<{
+    shop_id?: string;
+    item_id: number;
+    price_list: Array<{ model_id?: number; original_price: number }>;
+  }>();
+  const shop = await writeTarget(body.shop_id);
+  if (!shop) return c.json({ error: "shop_id required (the shop this item belongs to)" }, 400);
+  const auth = await getFreshAccessToken(shop.id);
   return c.json(await updateItemPrice(auth.accessToken, auth.shopeeShopId, body.item_id, body.price_list));
 });
 
 app.get("/orders", async (c) => {
-  const shopId = await shopOf(c);
-  if (!shopId) return noShop(c);
-  return c.json({ orders: await fetchOrders(shopId, daysAgo(Number(c.req.query("days") ?? 7))) });
+  const since = daysAgo(Number(c.req.query("days") ?? 7));
+  const res = merge(await perShop(await shopsOf(c), (shop) => fetchOrders(shop.id, since)));
+  res.items.sort((a, b) => b.create_time - a.create_time); // newest first across shops
+  return c.json(res);
 });
 
 app.get("/vouchers", async (c) => {
-  const shopId = await shopOf(c);
-  if (!shopId) return noShop(c);
-  const auth = await getFreshAccessToken(shopId);
-  const res = await getVoucherList(auth.accessToken, auth.shopeeShopId, "all");
-  return c.json({ vouchers: res.voucher_list ?? [] }); // Shopee sends null when there are none
+  return c.json(
+    merge(
+      await perShop(await shopsOf(c), async (_, auth) => {
+        const res = await getVoucherList(auth.accessToken, auth.shopeeShopId, "all");
+        return res.voucher_list ?? []; // Shopee sends null when there are none
+      }),
+    ),
+  );
 });
 
 app.get("/ads", async (c) => {
-  const shopId = await shopOf(c);
-  if (!shopId) return noShop(c);
   const start = c.req.query("start_date") ?? new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
   const end = c.req.query("end_date") ?? new Date().toISOString().slice(0, 10);
-  const auth = await getFreshAccessToken(shopId);
-  const res = await getAdsPerformance(auth.accessToken, auth.shopeeShopId, start, end);
-  // Some ads endpoints return no report_list (e.g. account has no ads) — page maps over this.
-  return c.json({ reports: res.report_list ?? [] });
+  return c.json(
+    merge(
+      await perShop(await shopsOf(c), async (_, auth) => {
+        const res = await getAdsPerformance(auth.accessToken, auth.shopeeShopId, start, end);
+        return res.report_list ?? [];
+      }),
+    ),
+  );
 });
 
-// Live from Shopee, so the window is capped: 30 days ≈ 2 order-list windows + 1 detail call per 50 orders.
+// Live from Shopee, so the window is capped: 30 days ≈ 2 order-list windows + 1 detail call per 50 orders, per shop.
 const MAX_INSIGHT_DAYS = 30;
+// Orders that count as sales: skip ones not paid yet or being cancelled.
+const NOT_SALES = new Set(["UNPAID", "IN_CANCEL", "CANCELLED"]);
+const round2 = (x: number) => Math.round(x * 100) / 100;
 
-/** Sales by product, basket pairs, order-size distribution — computed from live Shopee orders. */
+/**
+ * Sales by product, basket pairs, order-size distribution + a per-shop comparison.
+ * Item IDs are per shop, so product rows and basket pairs stay tagged with their shop.
+ */
 app.get("/insights", async (c) => {
-  const shopId = await shopOf(c);
-  if (!shopId) return noShop(c);
   const days = Math.min(Number(c.req.query("days") ?? MAX_INSIGHT_DAYS), MAX_INSIGHT_DAYS);
-  const orders = await fetchOrders(shopId, daysAgo(days));
-  const round = (x: number) => Math.round(x * 100) / 100;
+  const since = daysAgo(days);
+  const results = await perShop(await shopsOf(c), (shop) => fetchOrders(shop.id, since));
+  const tag = (r: (typeof results)[number]) => ({ shop_id: r.shop_id, shop_name: r.shop_name });
 
-  const byProduct = new Map<number, { item_name: string; qty: number; revenue: number }>();
-  for (const it of orders.flatMap((o) => o.item_list ?? [])) {
-    const entry = byProduct.get(it.item_id) ?? { item_name: it.item_name ?? `#${it.item_id}`, qty: 0, revenue: 0 };
-    entry.qty += it.model_quantity_purchased;
-    entry.revenue += Number(it.model_discounted_price) * it.model_quantity_purchased;
-    byProduct.set(it.item_id, entry);
-  }
-  const sales = [...byProduct.entries()]
-    .map(([item_id, v]) => ({ item_id, ...v, revenue: round(v.revenue) }))
-    .sort((a, b) => b.revenue - a.revenue);
-
+  const sales: Array<{ shop_id: string; shop_name: string; item_id: number; item_name: string; qty: number; revenue: number }> = [];
+  const basket: Array<ReturnType<typeof computeBasket>[number] & { shop_id: string; shop_name: string }> = [];
+  const byShop: Array<{ shop_id: string; shop_name: string; orders: number; revenue: number }> = [];
   const buckets = new Map<string, { orders: number; revenue: number }>();
-  for (const o of orders) {
-    const b = orderSizeBucket(Number(o.total_amount));
-    const e = buckets.get(b) ?? { orders: 0, revenue: 0 };
-    e.orders++;
-    e.revenue += Number(o.total_amount);
-    buckets.set(b, e);
-  }
-  const sizes = [...buckets.entries()].map(([bucket, v]) => ({ bucket, ...v, revenue: round(v.revenue) }));
+  const errors: Array<{ shop_id: string; shop_name: string; error: string }> = [];
 
-  const basket = computeBasket(orders).slice(0, 50);
-  return c.json({ days, sales, sizes, basket });
+  for (const r of results) {
+    if (!r.ok) {
+      errors.push({ ...tag(r), error: r.error });
+      continue;
+    }
+    const orders = r.data.filter((o) => !NOT_SALES.has(o.order_status));
+
+    const byProduct = new Map<number, { item_name: string; qty: number; revenue: number }>();
+    for (const it of orders.flatMap((o) => o.item_list ?? [])) {
+      const e = byProduct.get(it.item_id) ?? { item_name: it.item_name ?? `#${it.item_id}`, qty: 0, revenue: 0 };
+      e.qty += it.model_quantity_purchased;
+      e.revenue += Number(it.model_discounted_price) * it.model_quantity_purchased;
+      byProduct.set(it.item_id, e);
+    }
+    for (const [item_id, v] of byProduct) sales.push({ ...tag(r), item_id, ...v, revenue: round2(v.revenue) });
+
+    for (const o of orders) {
+      const b = orderSizeBucket(Number(o.total_amount));
+      const e = buckets.get(b) ?? { orders: 0, revenue: 0 };
+      e.orders++;
+      e.revenue += Number(o.total_amount);
+      buckets.set(b, e);
+    }
+
+    basket.push(...computeBasket(orders).map((p) => ({ ...p, ...tag(r) })));
+    byShop.push({ ...tag(r), orders: orders.length, revenue: round2(orders.reduce((s, o) => s + Number(o.total_amount), 0)) });
+  }
+
+  sales.sort((a, b) => b.revenue - a.revenue);
+  basket.sort((a, b) => b.lift - a.lift);
+  const sizes = [...buckets.entries()].map(([bucket, v]) => ({ bucket, ...v, revenue: round2(v.revenue) }));
+  return c.json({ days, by_shop: byShop, sales, sizes, basket: basket.slice(0, 50), errors });
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -252,11 +276,9 @@ app.get("/insights", async (c) => {
 
 // Shops are Shopee MY → "today" is Malaysia time (UTC+8, no DST).
 const MY_UTC_OFFSET = 8 * 3600;
-// Orders that count as sales: skip ones not paid yet or being cancelled.
-const NOT_SALES = new Set(["UNPAID", "IN_CANCEL", "CANCELLED"]);
 // "Low stock" = at or below this many units. Env-tunable per shop owner's taste.
 const LOW_STOCK_THRESHOLD = Number(process.env.LOW_STOCK_THRESHOLD ?? 5);
-// ponytail: 10 pages × 60 = 600 unread conversations max; add a "600+" flag if a shop ever gets there.
+// ponytail: 10 pages × 60 = 600 unread conversations max per shop; add a "600+" flag if a shop ever gets there.
 const MAX_CHAT_PAGES = 10;
 
 type Section<T> = { ok: true; data: T } | { ok: false; error: string };
@@ -269,64 +291,81 @@ const section = async <T>(fn: () => Promise<T>): Promise<Section<T>> => {
   }
 };
 
+/** Per shop: today's sales, unread chats, products/low stock — each section fails independently. */
 app.get("/overview", async (c) => {
-  const shopId = await shopOf(c);
-  if (!shopId) return noShop(c);
-  const auth = await getFreshAccessToken(shopId);
   const now = Math.floor(Date.now() / 1000);
   const todayStart = Math.floor((now + MY_UTC_OFFSET) / 86400) * 86400 - MY_UTC_OFFSET;
 
-  const [today, chats, products] = await Promise.all([
-    section(async () => {
-      const sales = (await fetchOrders(shopId, todayStart)).filter((o) => !NOT_SALES.has(o.order_status));
-      const revenue = sales.reduce((sum, o) => sum + Number(o.total_amount), 0);
-      return { orders: sales.length, revenue: Math.round(revenue * 100) / 100, currency: sales[0]?.currency ?? "MYR" };
-    }),
-    section(async () => {
-      let conversations = 0, messages = 0, cursor = "";
-      for (let page = 0; page < MAX_CHAT_PAGES; page++) {
-        const r = await getConversationList(auth.accessToken, auth.shopeeShopId, "unread", cursor);
-        const list = r.conversations ?? [];
-        conversations += list.length;
-        messages += list.reduce((sum, cv) => sum + (cv.unread_count ?? 0), 0);
-        if (!r.page_result.more) break;
-        cursor = r.page_result.next_cursor.next_message_time_nano;
-      }
-      return { conversations, messages };
-    }),
-    section(async () => {
-      const items = await listProducts(auth);
-      const lowStock = items
-        .filter((it) => it.stock != null && it.stock <= LOW_STOCK_THRESHOLD)
-        .sort((a, b) => (a.stock ?? 0) - (b.stock ?? 0))
-        .map(({ item_id, item_name, stock }) => ({ item_id, item_name, stock }));
-      return { total: items.length, low_stock_threshold: LOW_STOCK_THRESHOLD, low_stock: lowStock };
-    }),
-  ]);
+  const shops = await Promise.all(
+    (await shopsOf(c)).map(async (shop) => {
+      const tag = { shop_id: shop.id, shop_name: shop.shop_name };
+      const auth = await section(() => getFreshAccessToken(shop.id));
+      if (!auth.ok) return { ...tag, today: auth, chats: auth, products: auth };
 
-  return c.json({ today, chats, products });
+      const [today, chats, products] = await Promise.all([
+        section(async () => {
+          const sales = (await fetchOrders(shop.id, todayStart)).filter((o) => !NOT_SALES.has(o.order_status));
+          const revenue = sales.reduce((sum, o) => sum + Number(o.total_amount), 0);
+          return { orders: sales.length, revenue: round2(revenue), currency: sales[0]?.currency ?? "MYR" };
+        }),
+        section(async () => {
+          let conversations = 0, messages = 0, cursor = "";
+          for (let page = 0; page < MAX_CHAT_PAGES; page++) {
+            const r = await listConversations(auth.data, "unread", cursor);
+            conversations += r.conversations.length;
+            messages += r.conversations.reduce((sum, cv) => sum + (cv.unread_count ?? 0), 0);
+            if (!r.more) break;
+            cursor = r.next;
+          }
+          return { conversations, messages };
+        }),
+        section(async () => {
+          const items = await listProducts(auth.data);
+          const lowStock = items
+            .filter((it) => it.stock != null && it.stock <= LOW_STOCK_THRESHOLD)
+            .sort((a, b) => (a.stock ?? 0) - (b.stock ?? 0))
+            .map(({ item_id, item_name, stock }) => ({ item_id, item_name, stock }));
+          return { total: items.length, low_stock: lowStock };
+        }),
+      ]);
+      return { ...tag, today, chats, products };
+    }),
+  );
+
+  return c.json({ low_stock_threshold: LOW_STOCK_THRESHOLD, shops });
 });
 
 // ─────────────────────────────────────────────────────────────
-// Chat
+// Chat — one inbox across shops; reading a thread / sending always names its shop.
 // ─────────────────────────────────────────────────────────────
 
+/** Latest conversations per shop (first page, up to 60 each), merged newest first. type=all|unread. */
+app.get("/chat/conversations", async (c) => {
+  const type = c.req.query("type") === "unread" ? "unread" : "all";
+  const res = merge(
+    await perShop(await shopsOf(c), async (_, auth) => {
+      return (await listConversations(auth, type)).conversations;
+    }),
+  );
+  res.items.sort((a, b) => (b.last_message_timestamp ?? 0) - (a.last_message_timestamp ?? 0));
+  return c.json(res);
+});
+
 app.get("/chat/messages", async (c) => {
-  const shopId = await shopOf(c);
-  if (!shopId) return noShop(c);
+  const shop = await writeTarget(c.req.query("shop_id"));
   const conversationId = c.req.query("conversation_id");
-  if (!conversationId) return c.json({ error: "conversation_id required" }, 400);
-  const auth = await getFreshAccessToken(shopId);
-  const res = await getMessageList(auth.accessToken, auth.shopeeShopId, conversationId);
-  return c.json({ messages: res.messages ?? [] });
+  if (!shop || !conversationId) return c.json({ error: "shop_id and conversation_id required" }, 400);
+  const auth = await getFreshAccessToken(shop.id);
+  return c.json({ shopee_shop_id: auth.shopeeShopId, messages: await listMessages(auth, conversationId) });
 });
 
 app.post("/chat/send", async (c) => {
-  const shopId = await shopOf(c);
-  if (!shopId) return noShop(c);
-  const { to_buyer_id, text } = await c.req.json<{ to_buyer_id: number; text: string }>();
-  const auth = await getFreshAccessToken(shopId);
-  await sendMessage(auth.accessToken, auth.shopeeShopId, to_buyer_id, text);
+  const { shop_id, to_id, text } = await c.req.json<{ shop_id?: string; to_id: number; text: string }>();
+  const shop = await writeTarget(shop_id);
+  if (!shop) return c.json({ error: "shop_id required (the shop this conversation belongs to)" }, 400);
+  if (!to_id || !text?.trim()) return c.json({ error: "to_id and text required" }, 400);
+  const auth = await getFreshAccessToken(shop.id);
+  await send(auth, to_id, text.trim());
   return c.json({ ok: true });
 });
 

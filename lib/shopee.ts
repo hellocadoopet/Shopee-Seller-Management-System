@@ -234,13 +234,23 @@ export async function getOrderDetail(accessToken: string, shopId: number, orderS
   );
 }
 
+export interface ShopeeMessage {
+  message_id: string;
+  from_id: number;
+  to_id: number;
+  from_shop_id: number; // equals our shop id when the seller sent it
+  message_type: string; // "text", "image", "sticker", "item", "order", ...
+  content: { text?: string; url?: string; item_id?: number; order_sn?: string };
+  created_timestamp: number;
+}
+
 export async function getMessageList(
   accessToken: string,
   shopId: number,
   conversationId: string,
   offset = "",
 ) {
-  return execute<{ messages?: Array<Record<string, unknown>>; page_result: { next_offset: string; more: boolean } }>(
+  return execute<{ messages?: ShopeeMessage[]; page_result: { next_offset: string; more: boolean } }>(
     signShop("/api/v2/sellerchat/get_message", accessToken, shopId, {
       conversation_id: conversationId,
       offset,
