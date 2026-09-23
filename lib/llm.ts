@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { config } from "./config";
 
 export type LlmProvider = "claude" | "openai" | "deepseek";
 
@@ -27,6 +28,12 @@ export const KEY_HELP: Record<LlmProvider, string> = {
   deepseek: "platform.deepseek.com → API keys",
 };
 
+/** AI settings come from env: LLM_PROVIDER, LLM_API_KEY, LLM_MODEL (optional). */
+export function getLlmConfig(): LlmConfig {
+  const provider = (Object.keys(PROVIDER_LABELS).includes(config.llm.provider) ? config.llm.provider : "claude") as LlmProvider;
+  return { provider, apiKey: config.llm.apiKey, model: config.llm.model || DEFAULT_MODELS[provider] };
+}
+
 /**
  * Generate a reply using whichever provider is configured.
  * OpenAI and DeepSeek share the same request shape (OpenAI-compatible),
@@ -38,7 +45,7 @@ export async function generateReply(
   userPrompt: string,
 ): Promise<string> {
   if (!cfg.apiKey) {
-    throw new Error("No AI API key configured. Open Settings and add one.");
+    throw new Error("No AI API key configured. Set LLM_API_KEY in env.");
   }
 
   if (cfg.provider === "claude") {

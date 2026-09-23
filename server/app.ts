@@ -19,11 +19,10 @@ import {
   updateItemPrice,
   type ShopeeItemBase,
 } from "../lib/shopee";
-import { syncOrders } from "../lib/sync";
+import { fetchOrders } from "../lib/orders";
 import { computeBasket, orderSizeBucket } from "../lib/analytics";
-import { matchRule, suggestReply } from "../lib/chatbot";
-import { getLlmConfig, getSettingsStatus, saveLlmConfig } from "../lib/settings";
-import { DEFAULT_MODELS, generateReply, type LlmProvider } from "../lib/llm";
+import { matchRule, rules, suggestReply } from "../lib/chatbot";
+import { generateReply, getLlmConfig } from "../lib/llm";
 
 export const app = new Hono().basePath("/api");
 
@@ -209,11 +208,10 @@ app.post("/products", async (c) => {
   return c.json(await updateItemPrice(auth.accessToken, auth.shopeeShopId, body.item_id, body.price_list));
 });
 
-/** Fetch orders for the period from Shopee, save them (powers Insights + Overview), return them. */
 app.get("/orders", async (c) => {
   const shopId = await shopOf(c);
   if (!shopId) return noShop(c);
-  return c.json({ orders: await syncOrders(shopId, Number(c.req.query("days") ?? 7)) });
+  return c.json({ orders: await fetchOrders(shopId, Number(c.req.query("days") ?? 7)) });
 });
 
 app.get("/vouchers", async (c) => {
@@ -235,38 +233,30 @@ app.get("/ads", async (c) => {
   return c.json({ reports: res.report_list ?? [] });
 });
 
-/** Sales by product, basket pairs, order-size distribution — recomputed from synced orders. */
+// Live from Shopee, so the window is capped: 30 days ≈ 2 order-list windows + 1 detail call per 50 orders.
+const MAX_INSIGHT_DAYS = 30;
+
+/** Sales by product, basket pairs, order-size distribution — computed from live Shopee orders. */
 app.get("/insights", async (c) => {
   const shopId = await shopOf(c);
   if (!shopId) return noShop(c);
-  const days = Number(c.req.query("days") ?? 30);
-  const since = new Date(Date.now() - days * 86400_000).toISOString();
+  const days = Math.min(Number(c.req.query("days") ?? MAX_INSIGHT_DAYS), MAX_INSIGHT_DAYS);
+  const orders = await fetchOrders(shopId, days);
   const round = (x: number) => Math.round(x * 100) / 100;
 
-  const { data: items } = await supabase
-    .from("shopee_order_items")
-    .select("item_id, item_name, qty, discounted_price")
-    .eq("shop_id", shopId);
-
   const byProduct = new Map<number, { item_name: string; qty: number; revenue: number }>();
-  for (const it of items ?? []) {
+  for (const it of orders.flatMap((o) => o.item_list ?? [])) {
     const entry = byProduct.get(it.item_id) ?? { item_name: it.item_name ?? `#${it.item_id}`, qty: 0, revenue: 0 };
-    entry.qty += it.qty;
-    entry.revenue += Number(it.discounted_price) * it.qty;
+    entry.qty += it.model_quantity_purchased;
+    entry.revenue += Number(it.model_discounted_price) * it.model_quantity_purchased;
     byProduct.set(it.item_id, entry);
   }
   const sales = [...byProduct.entries()]
     .map(([item_id, v]) => ({ item_id, ...v, revenue: round(v.revenue) }))
     .sort((a, b) => b.revenue - a.revenue);
 
-  const { data: orders } = await supabase
-    .from("shopee_orders")
-    .select("total_amount")
-    .eq("shop_id", shopId)
-    .gte("created_at_shopee", since);
-
   const buckets = new Map<string, { orders: number; revenue: number }>();
-  for (const o of orders ?? []) {
+  for (const o of orders) {
     const b = orderSizeBucket(Number(o.total_amount));
     const e = buckets.get(b) ?? { orders: 0, revenue: 0 };
     e.orders++;
@@ -275,8 +265,8 @@ app.get("/insights", async (c) => {
   }
   const sizes = [...buckets.entries()].map(([bucket, v]) => ({ bucket, ...v, revenue: round(v.revenue) }));
 
-  const basket = (await computeBasket(shopId)).slice(0, 50);
-  return c.json({ sales, sizes, basket });
+  const basket = computeBasket(orders).slice(0, 50);
+  return c.json({ days, sales, sizes, basket });
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -296,79 +286,33 @@ app.get("/chat/messages", async (c) => {
 app.post("/chat/send", async (c) => {
   const shopId = await shopOf(c);
   if (!shopId) return noShop(c);
-  const { to_buyer_id, text, source } = await c.req.json<{
-    to_buyer_id: number;
-    text: string;
-    source: "manual" | "rule" | "llm";
-  }>();
-
+  const { to_buyer_id, text } = await c.req.json<{ to_buyer_id: number; text: string }>();
   const auth = await getFreshAccessToken(shopId);
   await sendMessage(auth.accessToken, auth.shopeeShopId, to_buyer_id, text);
-  await supabase.from("chatbot_replies").insert({
-    shop_id: shopId,
-    conversation_id: `conv-${to_buyer_id}`,
-    triggered_by: source,
-    reply_text: text,
-  });
   return c.json({ ok: true });
 });
 
 app.post("/chat/suggest", async (c) => {
-  const shopId = await shopOf(c);
-  if (!shopId) return noShop(c);
   const { buyer_message } = await c.req.json<{ buyer_message: string }>();
 
-  // 1. Rules first
-  const { data: rules } = await supabase
-    .from("chatbot_rules")
-    .select("*")
-    .eq("shop_id", shopId)
-    .eq("active", true)
-    .order("priority", { ascending: true });
-  const ruleHit = matchRule(buyer_message, rules ?? []);
-  if (ruleHit) return c.json({ source: "rule", reply: ruleHit.reply, rule_id: ruleHit.id });
-
-  // 2. Fall back to LLM, past manual replies as style examples
-  const { data: history } = await supabase
-    .from("chatbot_replies")
-    .select("reply_text")
-    .eq("shop_id", shopId)
-    .eq("triggered_by", "manual")
-    .order("sent_at", { ascending: false })
-    .limit(20);
-
-  const reply = await suggestReply({
-    buyerMessage: buyer_message,
-    pastManualReplies: (history ?? []).map((h) => h.reply_text),
-  });
-  return c.json({ source: "llm", reply });
+  // 1. Rules first (config/chatbot.json), 2. then the LLM
+  const ruleHit = matchRule(buyer_message, rules);
+  if (ruleHit) return c.json({ source: "rule", reply: ruleHit.reply, rule_name: ruleHit.rule_name });
+  return c.json({ source: "llm", reply: await suggestReply(buyer_message) });
 });
 
 // ─────────────────────────────────────────────────────────────
-// AI settings
+// AI settings (read-only — configured via LLM_PROVIDER / LLM_API_KEY / LLM_MODEL env)
 // ─────────────────────────────────────────────────────────────
 
-const VALID_PROVIDERS: LlmProvider[] = ["claude", "openai", "deepseek"];
-
-app.get("/settings", async (c) => c.json(await getSettingsStatus()));
-
-app.post("/settings", async (c) => {
-  const body = await c.req.json<{ provider: LlmProvider; api_key?: string; model?: string }>();
-  if (!VALID_PROVIDERS.includes(body.provider)) return c.json({ error: "invalid provider" }, 400);
-  const model = body.model?.trim() || DEFAULT_MODELS[body.provider];
-  await saveLlmConfig(body.provider, body.api_key?.trim() || null, model);
-  return c.json({ ok: true });
+app.get("/settings", (c) => {
+  const { provider, model, apiKey } = getLlmConfig();
+  return c.json({ provider, model, hasKey: !!apiKey });
 });
 
-/** Test the AI connection — with the form's key if sent (verify before saving), else the saved config. */
 app.post("/settings/test", async (c) => {
-  const body = await c.req.json<{ provider?: LlmProvider; api_key?: string; model?: string }>();
   try {
-    const cfg =
-      body.api_key && body.provider
-        ? { provider: body.provider, apiKey: body.api_key.trim(), model: body.model?.trim() || DEFAULT_MODELS[body.provider] }
-        : await getLlmConfig();
-    const reply = await generateReply(cfg, "You are a helpful assistant. Reply in a few words only.", "Reply with exactly: connection ok");
+    const reply = await generateReply(getLlmConfig(), "You are a helpful assistant. Reply in a few words only.", "Reply with exactly: connection ok");
     return c.json({ ok: true, reply });
   } catch (e) {
     return c.json({ ok: false, error: String(e) });

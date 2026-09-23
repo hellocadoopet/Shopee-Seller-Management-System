@@ -1,29 +1,28 @@
-import { getLlmConfig } from "./settings";
-import { generateReply } from "./llm";
+import { generateReply, getLlmConfig } from "./llm";
+import chatbotConfig from "../config/chatbot.json";
 
+/** Keyword rules, checked in file order (first match wins). Edit config/chatbot.json. */
 export interface ChatbotRule {
-  id: string;
-  shop_id: string;
   name: string;
   trigger_keywords: string[];
   match_mode: "any" | "all" | "regex";
   reply_template: string;
-  active: boolean;
-  priority: number;
 }
 
 export interface RuleMatch {
-  id: string;
   rule_name: string;
   reply: string;
 }
+
+export const rules = chatbotConfig.rules as ChatbotRule[];
+/** Example seller replies the AI copies the tone of (English / Bahasa / Chinese mix). */
+export const toneExamples = chatbotConfig.tone_examples as string[];
 
 export function matchRule(buyerMessage: string, rules: ChatbotRule[]): RuleMatch | null {
   const text = buyerMessage.toLowerCase().trim();
   if (!text) return null;
 
   for (const r of rules) {
-    if (!r.active) continue;
     let hit = false;
 
     if (r.match_mode === "regex") {
@@ -40,7 +39,6 @@ export function matchRule(buyerMessage: string, rules: ChatbotRule[]): RuleMatch
 
     if (hit) {
       return {
-        id: r.id,
         rule_name: r.name,
         reply: r.reply_template.replace(/\{\{buyer_message\}\}/g, buyerMessage),
       };
@@ -56,27 +54,24 @@ export function matchRule(buyerMessage: string, rules: ChatbotRule[]): RuleMatch
  *
  * We never auto-send LLM replies — they're suggestions for the seller to approve.
  */
-export async function suggestReply(args: {
-  buyerMessage: string;
-  pastManualReplies: string[];
-}): Promise<string> {
-  const cfg = await getLlmConfig();
+export async function suggestReply(buyerMessage: string): Promise<string> {
+  const cfg = getLlmConfig();
   if (!cfg.apiKey) {
-    return "(No AI connected — open Settings to add Claude, ChatGPT, or DeepSeek)";
+    return "(No AI connected — set LLM_PROVIDER and LLM_API_KEY in env)";
   }
 
-  const examples = args.pastManualReplies.slice(0, 10).map((r, i) => `${i + 1}. ${r}`).join("\n");
+  const examples = toneExamples.slice(0, 10).map((r, i) => `${i + 1}. ${r}`).join("\n");
 
   const systemPrompt = [
     "You draft short, friendly Shopee Malaysia seller customer-service replies.",
-    "Match the tone, language, and emoji style of past manual replies (below).",
+    "Match the tone, language, and emoji style of the example replies (below).",
     "Sellers commonly mix English, Bahasa Malaysia, and Chinese.",
     "Keep under 200 characters. Never promise refunds, free items, or share external links unless asked.",
     "",
-    "Past replies (mimic this style):",
-    examples || "(no past replies — use polite, neutral, helpful tone)",
+    "Example replies (mimic this style):",
+    examples || "(no examples — use polite, neutral, helpful tone)",
   ].join("\n");
 
-  const userPrompt = `Buyer said: "${args.buyerMessage}"\n\nDraft a reply:`;
+  const userPrompt = `Buyer said: "${buyerMessage}"\n\nDraft a reply:`;
   return generateReply(cfg, systemPrompt, userPrompt);
 }

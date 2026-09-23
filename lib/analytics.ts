@@ -1,4 +1,4 @@
-import { supabase } from "./supabase";
+import type { ShopeeOrderDetail } from "./shopee";
 
 export interface BasketPair {
   item_a: number;
@@ -11,23 +11,16 @@ export interface BasketPair {
 
 /**
  * Market basket — "buyers who bought X also bought Y".
- * Recomputes from shopee_order_items. Fine for shops with <100k orders.
+ * Computed from the orders passed in (fetched live from Shopee).
  */
-export async function computeBasket(shopId: string, opts: { minSupport?: number; minCoOrders?: number } = {}) {
+export function computeBasket(orders: ShopeeOrderDetail[], opts: { minSupport?: number; minCoOrders?: number } = {}) {
   const minSupport = opts.minSupport ?? 0.01;
   const minCoOrders = opts.minCoOrders ?? 5;
 
-  const { data } = await supabase
-    .from("shopee_order_items")
-    .select("order_sn, item_id")
-    .eq("shop_id", shopId);
-  if (!data?.length) return [];
-
   const ordersToItems = new Map<string, Set<number>>();
-  for (const row of data) {
-    let s = ordersToItems.get(row.order_sn);
-    if (!s) ordersToItems.set(row.order_sn, (s = new Set()));
-    s.add(row.item_id);
+  for (const o of orders) {
+    const items = new Set((o.item_list ?? []).map((it) => it.item_id));
+    if (items.size) ordersToItems.set(o.order_sn, items);
   }
 
   const totalOrders = ordersToItems.size;

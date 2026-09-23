@@ -16,8 +16,9 @@ export const config = {
   },
   tokenEncryptionKey: process.env.TOKEN_ENCRYPTION_KEY ?? "",
   llm: {
-    apiKey: process.env.ANTHROPIC_API_KEY ?? "",
-    model: process.env.LLM_MODEL ?? "claude-haiku-4-5-20251001",
+    provider: process.env.LLM_PROVIDER ?? "claude",
+    apiKey: process.env.LLM_API_KEY ?? "",
+    model: process.env.LLM_MODEL ?? "",
   },
 };
 

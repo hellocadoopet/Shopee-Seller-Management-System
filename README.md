@@ -12,21 +12,21 @@ Single owner, multiple shops. Not a multi-tenant SaaS.
 
 | Tab | What you can do | Notes |
 |---|---|---|
-| **Overview** | Today's orders, revenue, unread chats | Reads synced data |
+| **Overview** | Landing page for the dashboard | |
 | **Products** | List items, see price + stock, **edit price inline** | Editing writes to real Shopee |
-| **Orders** | Fetch orders (1 / 7 / 30 / 90 days), auto-saves to DB | Powers Insights |
+| **Orders** | Orders from the last 14 days | Live from Shopee |
 | **Chat** | Paste a buyer message → get an AI-drafted reply → send | You approve before sending |
 | **Vouchers** | List shop vouchers & discounts | Create coming next |
 | **Campaigns** | View Shopee campaign join status | Read-only (Shopee-run) |
 | **Ads** | Ad performance table | Read-only; report endpoint WIP |
-| **Insights** | Sales by product, market-basket pairs, order-size distribution | Computed from synced orders |
-| **Settings** | Choose AI provider + API key | Claude / ChatGPT / DeepSeek |
+| **Insights** | Sales by product, market-basket pairs, order-size distribution | Last 30 days, computed live from Shopee |
+| **Settings** | Shows which AI is configured + test button | Set via env vars |
 
 ### AI customer replies
-- **Rules first:** keyword → template (instant, free).
-- **Then AI:** if no rule matches, the AI drafts a reply, learning your tone from your past replies.
+- **Rules first:** keyword → template (instant, free). Rules live in `config/chatbot.json`.
+- **Then AI:** if no rule matches, the AI drafts a reply, copying the tone of the `tone_examples` in `config/chatbot.json`.
 - **You approve:** the AI never auto-sends — you click Send. (Assistant mode.)
-- **Your choice of AI:** Claude, ChatGPT (OpenAI), or DeepSeek — set in Settings with an API key.
+- **Your choice of AI:** Claude, ChatGPT (OpenAI), or DeepSeek — set `LLM_PROVIDER` + `LLM_API_KEY` in env.
 
 ---
 
@@ -36,7 +36,7 @@ Single owner, multiple shops. Not a multi-tenant SaaS.
 |---|---|
 | Pages | React 19 + Vite (single-page app, react-router) |
 | API | Hono — runs as one Vercel function in prod, a Node server in dev |
-| Database | Supabase (Postgres) |
+| Database | Supabase (Postgres) — only connected shops + their Shopee tokens |
 | Hosting | Vercel (frontend + API together) |
 | External API | Shopee Open Platform v2 |
 | AI | Claude / OpenAI / DeepSeek (pick one) |
@@ -56,9 +56,7 @@ cp .env.example .env.local
 # then fill in the values (see below)
 
 # 3. Set up the database (once)
-# Open Supabase SQL editor and run, in order:
-#   db/schema.sql
-#   db/02_settings.sql
+# Open Supabase SQL editor and run db/schema.sql
 
 # 4. Start the app (Vite on :3000, API on :8787 — Vite proxies /api)
 npm run dev
@@ -77,7 +75,9 @@ npm run dev
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase secret key (server only) |
 | `TOKEN_ENCRYPTION_KEY` | 32-byte base64 — encrypts stored Shopee tokens |
 | `APP_PASSWORD` | Login password for the app. **Empty = no lock (local dev).** |
-| `ANTHROPIC_API_KEY` | Optional — AI key can also be set in the Settings page |
+| `LLM_PROVIDER` | Optional — `claude` (default), `openai`, or `deepseek` |
+| `LLM_API_KEY` | Optional — API key for that provider (chat reply suggestions) |
+| `LLM_MODEL` | Optional — leave empty for the provider default |
 
 > `.env.local` is never uploaded to GitHub (it's in `.gitignore`). Each person recreates it locally.
 
@@ -139,7 +139,8 @@ src/                React app — pages/ (tabs, login, connect), components/, ma
 server/app.ts       Hono API — every /api route + the password gate
 server/dev.ts       Local API server (:8787)
 api/index.ts        Vercel function entry (wraps server/app.ts)
-lib/                Shopee client, Supabase, crypto, tokens, chatbot, AI providers, sync
-db/                 Database schema + migrations
+lib/                Shopee client, Supabase, crypto, tokens, chatbot, AI providers, orders
+db/                 Database schema (shops + tokens)
+config/chatbot.json Chat reply rules + AI tone examples
 vercel.json         /api/* → function, everything else → index.html
 ```

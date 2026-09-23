@@ -33,12 +33,12 @@ export default function InsightsPage() {
 
   return (
     <div className="space-y-8">
-      <h1 className="text-2xl font-semibold">Insights</h1>
+      <h1 className="text-2xl font-semibold">Insights — last 30 days</h1>
 
       <section className="bg-white rounded-xl border border-gray-200 p-5">
         <h2 className="font-medium mb-4">Sales by product</h2>
         {!sales.length ? (
-          <p className="text-sm text-gray-400">No order data yet. Open the Orders tab to sync from Shopee.</p>
+          <p className="text-sm text-gray-400">No orders in the last 30 days.</p>
         ) : (
           <table className="w-full text-sm">
             <thead className="text-gray-600">
