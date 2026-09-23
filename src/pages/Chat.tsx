@@ -132,7 +132,10 @@ function Thread({ conv, onSent }: { conv: Conversation & { shop_id: string; shop
   const messages = [...(thread.data?.messages ?? [])].sort((a, b) => a.created_timestamp - b.created_timestamp);
   const isSeller = (m: Message) => m.from_shop_id === thread.data?.shopee_shop_id;
 
-  useEffect(() => bottom.current?.scrollIntoView(), [messages.length]);
+  // Block body on purpose: newer Chrome's scrollIntoView() returns a Promise, and an effect must return nothing.
+  useEffect(() => {
+    bottom.current?.scrollIntoView();
+  }, [messages.length]);
 
   // The buyer's latest unanswered messages — what a reply should respond to.
   const lastSeller = messages.map(isSeller).lastIndexOf(true);
