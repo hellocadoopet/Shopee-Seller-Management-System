@@ -5,20 +5,19 @@ import { getOrderList, getOrderDetail, type ShopeeOrderDetail } from "./shopee";
 const MAX_WINDOW_SECONDS = 15 * 86400;
 
 /**
- * Fetch full order details for the last `daysBack` days, live from Shopee (nothing is stored).
+ * Fetch full details of orders created from `sinceSec` (unix seconds) until now, live from Shopee.
  *
  * Handles the two Shopee quirks that the naive version got wrong:
  *   1. Time window capped at 15 days  → we walk the range in 15-day chunks.
  *   2. Order list is paginated (100/page) → we follow the cursor until `more` is false.
  */
-export async function fetchOrders(shopUuid: string, daysBack: number): Promise<ShopeeOrderDetail[]> {
+export async function fetchOrders(shopUuid: string, sinceSec: number): Promise<ShopeeOrderDetail[]> {
   const auth = await getFreshAccessToken(shopUuid);
   const now = Math.floor(Date.now() / 1000);
-  const start = now - daysBack * 86400;
 
   // 1. Collect all order numbers, chunking by 15-day windows + following cursor
   const orderSns: string[] = [];
-  for (let from = start; from < now; from += MAX_WINDOW_SECONDS) {
+  for (let from = sinceSec; from < now; from += MAX_WINDOW_SECONDS) {
     const to = Math.min(from + MAX_WINDOW_SECONDS, now);
     let cursor = "";
     do {

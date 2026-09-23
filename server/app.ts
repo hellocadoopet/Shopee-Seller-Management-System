@@ -11,15 +11,14 @@ import {
   exchangeCodeForToken,
   getShopInfo,
   getAdsPerformance,
-  getItemList,
-  getItemBaseInfo,
+  getConversationList,
   getMessageList,
   getVoucherList,
   sendMessage,
   updateItemPrice,
-  type ShopeeItemBase,
 } from "../lib/shopee";
 import { fetchOrders } from "../lib/orders";
+import { listProducts } from "../lib/products";
 import { computeBasket, orderSizeBucket } from "../lib/analytics";
 import { matchRule, rules, suggestReply } from "../lib/chatbot";
 import { generateReply, getLlmConfig, KEY_ENV } from "../lib/llm";
@@ -167,37 +166,15 @@ app.get("/shops", async (c) => {
   return c.json({ shops: data ?? [] });
 });
 
+const daysAgo = (days: number) => Math.floor(Date.now() / 1000) - days * 86400;
+
 const shopOf = (c: Context) => getCurrentShopId(getCookie(c, CURRENT_SHOP_COOKIE));
 const noShop = (c: Context) => c.json({ error: "no shop connected" }, 400);
 
 app.get("/products", async (c) => {
   const shopId = await shopOf(c);
   if (!shopId) return noShop(c);
-  const auth = await getFreshAccessToken(shopId);
-
-  // 1. Item IDs (list endpoint has no prices)
-  const list = await getItemList(auth.accessToken, auth.shopeeShopId, 0, 100);
-  const ids = (list.item ?? []).map((i) => i.item_id);
-  if (!ids.length) return c.json({ items: [] });
-
-  // 2. Names, prices, stock in batches of 50
-  const base: ShopeeItemBase[] = [];
-  for (let i = 0; i < ids.length; i += 50) {
-    const r = await getItemBaseInfo(auth.accessToken, auth.shopeeShopId, ids.slice(i, i + 50));
-    base.push(...(r.item_list ?? []));
-  }
-
-  const items = base.map((b) => ({
-    item_id: b.item_id,
-    item_name: b.item_name,
-    item_sku: b.item_sku,
-    item_status: b.item_status,
-    has_model: b.has_model,
-    // price_info only populated for single-variant items; variant items need a model lookup.
-    price: b.price_info?.[0]?.current_price ?? null,
-    stock: b.stock_info_v2?.summary_info?.total_available_stock ?? null,
-  }));
-  return c.json({ items });
+  return c.json({ items: await listProducts(await getFreshAccessToken(shopId)) });
 });
 
 app.post("/products", async (c) => {
@@ -211,7 +188,7 @@ app.post("/products", async (c) => {
 app.get("/orders", async (c) => {
   const shopId = await shopOf(c);
   if (!shopId) return noShop(c);
-  return c.json({ orders: await fetchOrders(shopId, Number(c.req.query("days") ?? 7)) });
+  return c.json({ orders: await fetchOrders(shopId, daysAgo(Number(c.req.query("days") ?? 7))) });
 });
 
 app.get("/vouchers", async (c) => {
@@ -241,7 +218,7 @@ app.get("/insights", async (c) => {
   const shopId = await shopOf(c);
   if (!shopId) return noShop(c);
   const days = Math.min(Number(c.req.query("days") ?? MAX_INSIGHT_DAYS), MAX_INSIGHT_DAYS);
-  const orders = await fetchOrders(shopId, days);
+  const orders = await fetchOrders(shopId, daysAgo(days));
   const round = (x: number) => Math.round(x * 100) / 100;
 
   const byProduct = new Map<number, { item_name: string; qty: number; revenue: number }>();
@@ -267,6 +244,67 @@ app.get("/insights", async (c) => {
 
   const basket = computeBasket(orders).slice(0, 50);
   return c.json({ days, sales, sizes, basket });
+});
+
+// ─────────────────────────────────────────────────────────────
+// Overview
+// ─────────────────────────────────────────────────────────────
+
+// Shops are Shopee MY → "today" is Malaysia time (UTC+8, no DST).
+const MY_UTC_OFFSET = 8 * 3600;
+// Orders that count as sales: skip ones not paid yet or being cancelled.
+const NOT_SALES = new Set(["UNPAID", "IN_CANCEL", "CANCELLED"]);
+// "Low stock" = at or below this many units. Env-tunable per shop owner's taste.
+const LOW_STOCK_THRESHOLD = Number(process.env.LOW_STOCK_THRESHOLD ?? 5);
+// ponytail: 10 pages × 60 = 600 unread conversations max; add a "600+" flag if a shop ever gets there.
+const MAX_CHAT_PAGES = 10;
+
+type Section<T> = { ok: true; data: T } | { ok: false; error: string };
+/** One Shopee failure shouldn't blank the whole page — each card reports its own error. */
+const section = async <T>(fn: () => Promise<T>): Promise<Section<T>> => {
+  try {
+    return { ok: true, data: await fn() };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+};
+
+app.get("/overview", async (c) => {
+  const shopId = await shopOf(c);
+  if (!shopId) return noShop(c);
+  const auth = await getFreshAccessToken(shopId);
+  const now = Math.floor(Date.now() / 1000);
+  const todayStart = Math.floor((now + MY_UTC_OFFSET) / 86400) * 86400 - MY_UTC_OFFSET;
+
+  const [today, chats, products] = await Promise.all([
+    section(async () => {
+      const sales = (await fetchOrders(shopId, todayStart)).filter((o) => !NOT_SALES.has(o.order_status));
+      const revenue = sales.reduce((sum, o) => sum + Number(o.total_amount), 0);
+      return { orders: sales.length, revenue: Math.round(revenue * 100) / 100, currency: sales[0]?.currency ?? "MYR" };
+    }),
+    section(async () => {
+      let conversations = 0, messages = 0, cursor = "";
+      for (let page = 0; page < MAX_CHAT_PAGES; page++) {
+        const r = await getConversationList(auth.accessToken, auth.shopeeShopId, "unread", cursor);
+        const list = r.conversations ?? [];
+        conversations += list.length;
+        messages += list.reduce((sum, cv) => sum + (cv.unread_count ?? 0), 0);
+        if (!r.page_result.more) break;
+        cursor = r.page_result.next_cursor.next_message_time_nano;
+      }
+      return { conversations, messages };
+    }),
+    section(async () => {
+      const items = await listProducts(auth);
+      const lowStock = items
+        .filter((it) => it.stock != null && it.stock <= LOW_STOCK_THRESHOLD)
+        .sort((a, b) => (a.stock ?? 0) - (b.stock ?? 0))
+        .map(({ item_id, item_name, stock }) => ({ item_id, item_name, stock }));
+      return { total: items.length, low_stock_threshold: LOW_STOCK_THRESHOLD, low_stock: lowStock };
+    }),
+  ]);
+
+  return c.json({ today, chats, products });
 });
 
 // ─────────────────────────────────────────────────────────────

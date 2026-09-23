@@ -250,6 +250,36 @@ export async function getMessageList(
   );
 }
 
+export interface ShopeeConversation {
+  conversation_id: string;
+  to_id: number;
+  to_name?: string;
+  unread_count: number;
+  latest_message_content?: { text?: string };
+  last_message_timestamp?: number;
+}
+
+/** type: "all" | "unread" | "pinned". Page with next_timestamp_nano from the previous page_result. */
+export async function getConversationList(
+  accessToken: string,
+  shopId: number,
+  type: "all" | "unread" | "pinned",
+  nextTimestampNano = "",
+) {
+  return execute<{
+    conversations?: ShopeeConversation[];
+    page_result: { more: boolean; next_cursor: { next_message_time_nano: string; conversation_id: string } };
+  }>(
+    signShop("/api/v2/sellerchat/get_conversation_list", accessToken, shopId, {
+      direction: "older",
+      type,
+      page_size: 60,
+      ...(nextTimestampNano ? { next_timestamp_nano: nextTimestampNano } : {}),
+    }),
+    "GET",
+  );
+}
+
 export async function sendMessage(accessToken: string, shopId: number, toBuyerId: number, text: string) {
   return execute(
     signShop("/api/v2/sellerchat/send_message", accessToken, shopId),

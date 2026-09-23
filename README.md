@@ -12,7 +12,7 @@ Single owner, multiple shops. Not a multi-tenant SaaS.
 
 | Tab | What you can do | Notes |
 |---|---|---|
-| **Overview** | Landing page for the dashboard | |
+| **Overview** | Paid orders + revenue today (MY time), unread chats, product count, low-stock list | Live from Shopee; each card loads independently |
 | **Products** | List items, see price + stock, **edit price inline** | Editing writes to real Shopee |
 | **Orders** | Orders from the last 14 days | Live from Shopee |
 | **Chat** | Paste a buyer message → get an AI-drafted reply → send | You approve before sending |
@@ -74,6 +74,7 @@ npm run dev
 | `SUPABASE_URL` | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase secret key (server only) |
 | `TOKEN_ENCRYPTION_KEY` | 32-byte base64 — encrypts stored Shopee tokens |
+| `LOW_STOCK_THRESHOLD` | Optional — Overview flags items at or below this stock (default 5) |
 | `APP_PASSWORD` | Login password for the app. **Empty = no lock (local dev).** |
 | `LLM_PROVIDER` | Optional — which AI writes chat replies: `claude` (default), `openai`, or `deepseek` |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` | Optional — one key per provider; only the one `LLM_PROVIDER` picks is used |
