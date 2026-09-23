@@ -34,7 +34,8 @@ Single owner, multiple shops. Not a multi-tenant SaaS.
 
 | Layer | Tech |
 |---|---|
-| App (pages + API) | Next.js 15 (App Router) — one project, no separate backend |
+| Pages | React 19 + Vite (single-page app, react-router) |
+| API | Hono — runs as one Vercel function in prod, a Node server in dev |
 | Database | Supabase (Postgres) |
 | Hosting | Vercel (frontend + API together) |
 | External API | Shopee Open Platform v2 |
@@ -48,9 +49,9 @@ No message queue, no Redis, no separate worker service. Simple on purpose.
 
 ```bash
 # 1. Install dependencies
-pnpm install
+npm install
 
-# 2. Create your secrets file
+# 2. Create your secrets file (.env and/or .env.local — .env.local wins)
 cp .env.example .env.local
 # then fill in the values (see below)
 
@@ -59,8 +60,8 @@ cp .env.example .env.local
 #   db/schema.sql
 #   db/02_settings.sql
 
-# 4. Start the app
-pnpm dev
+# 4. Start the app (Vite on :3000, API on :8787 — Vite proxies /api)
+npm run dev
 # open http://localhost:3000
 ```
 
@@ -72,7 +73,7 @@ pnpm dev
 | `SHOPEE_PARTNER_KEY` | Secret — from open.shopee.com |
 | `SHOPEE_ENV` | `sandbox` (testing) or `live` (real shops) |
 | `SHOPEE_REDIRECT_URL` | `https://<your-domain>/api/shopee/callback` |
-| `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
+| `SUPABASE_URL` | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase secret key (server only) |
 | `TOKEN_ENCRYPTION_KEY` | 32-byte base64 — encrypts stored Shopee tokens |
 | `APP_PASSWORD` | Login password for the app. **Empty = no lock (local dev).** |
@@ -105,7 +106,7 @@ Every `git push` auto-deploys.
 
 ## For team members
 
-- **To edit the code:** you're invited as a collaborator. Clone the repo, `pnpm install`, create your own `.env.local`, edit, then push. Vercel auto-deploys.
+- **To edit the code:** you're invited as a collaborator. Clone the repo, `npm install`, create your own `.env.local`, edit, then push. Vercel auto-deploys.
 - **To use the app:** open the live URL and enter the shared password.
 - **Do not** put this project inside Google Drive/OneDrive — `node_modules` breaks their sync. Use a normal folder; GitHub is the backup.
 
@@ -134,12 +135,11 @@ Every `git push` auto-deploys.
 ## Project layout
 
 ```
-app/
-  dashboard/        The 7 tabs + settings
-  connect/          Connect a Shopee shop
-  login/            Password gate
-  api/              Server-side endpoints (Shopee OAuth, data, AI, login)
+src/                React app — pages/ (tabs, login, connect), components/, main.tsx (routes)
+server/app.ts       Hono API — every /api route + the password gate
+server/dev.ts       Local API server (:8787)
+api/index.ts        Vercel function entry (wraps server/app.ts)
 lib/                Shopee client, Supabase, crypto, tokens, chatbot, AI providers, sync
 db/                 Database schema + migrations
-middleware.ts       Password lock
+vercel.json         /api/* → function, everything else → index.html
 ```

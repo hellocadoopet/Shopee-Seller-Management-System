@@ -2,10 +2,10 @@
  * Quick smoke test for Shopee signing — calls a public endpoint with your
  * partner credentials. If you get back an ip_list, signing works.
  *
- * Run: pnpm smoke
+ * Run: npm run smoke
  */
-import { getShopeeIpRanges } from "@/lib/shopee";
-import { config } from "@/lib/config";
+import { getShopeeIpRanges } from "../lib/shopee";
+import { config } from "../lib/config";
 
 if (!config.shopee.partnerId || !config.shopee.partnerKey) {
   console.error("Set SHOPEE_PARTNER_ID and SHOPEE_PARTNER_KEY in .env.local first.");

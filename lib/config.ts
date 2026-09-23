@@ -11,7 +11,7 @@ export const config = {
     redirectUrl: process.env.SHOPEE_REDIRECT_URL ?? "",
   },
   supabase: {
-    url: process.env.NEXT_PUBLIC_SUPABASE_URL ?? "",
+    url: process.env.SUPABASE_URL ?? "",
     serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY ?? "",
   },
   tokenEncryptionKey: process.env.TOKEN_ENCRYPTION_KEY ?? "",
@@ -26,7 +26,7 @@ export function assertConfig() {
   required("SHOPEE_PARTNER_ID", String(config.shopee.partnerId));
   required("SHOPEE_PARTNER_KEY", config.shopee.partnerKey);
   required("SHOPEE_REDIRECT_URL", config.shopee.redirectUrl);
-  required("NEXT_PUBLIC_SUPABASE_URL", config.supabase.url);
+  required("SUPABASE_URL", config.supabase.url);
   required("SUPABASE_SERVICE_ROLE_KEY", config.supabase.serviceRoleKey);
   required("TOKEN_ENCRYPTION_KEY", config.tokenEncryptionKey);
 }
