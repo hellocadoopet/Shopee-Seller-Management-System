@@ -7,3 +7,6 @@ dist
 
 # build cache
 *.tsbuildinfo
+
+# env backups
+.env.local.backup-*

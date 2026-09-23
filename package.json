@@ -2,6 +2,7 @@
   "name": "shopee-solo",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "npm run dev:api & npm run dev:web",
     "dev:web": "vite",
