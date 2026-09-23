@@ -9,7 +9,7 @@ const LABELS: Record<Provider, string> = {
 };
 
 export default function SettingsPage() {
-  const [settings, setSettings] = useState<{ provider: Provider; model: string; hasKey: boolean } | null>(null);
+  const [settings, setSettings] = useState<{ provider: Provider; model: string; hasKey: boolean; keyEnv: string } | null>(null);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -48,7 +48,7 @@ export default function SettingsPage() {
           <span className="text-gray-500">Model:</span> <span className="font-mono">{settings?.model ?? "…"}</span>
         </div>
         <div>
-          <span className="text-gray-500">API key:</span>{" "}
+          <span className="text-gray-500">API key</span> <span className="font-mono">({settings?.keyEnv ?? "…"})</span>:{" "}
           {settings?.hasKey ? <span className="text-green-600">set</span> : <span className="text-red-600">missing</span>}
         </div>
         <button
@@ -64,8 +64,9 @@ export default function SettingsPage() {
       </div>
 
       <div className="mt-6 text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-lg p-4">
-        To change the AI, set <code>LLM_PROVIDER</code> (claude / openai / deepseek), <code>LLM_API_KEY</code>, and
-        optionally <code>LLM_MODEL</code> in the environment (Vercel → Settings → Environment Variables), then
+        To switch AI, set <code>LLM_PROVIDER</code> (claude / openai / deepseek) and that provider's key
+        (<code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>DEEPSEEK_API_KEY</code>) — optionally{" "}
+        <code>LLM_MODEL</code> — in the environment (Vercel → Settings → Environment Variables), then
         redeploy. Chat reply rules and tone examples live in <code>config/chatbot.json</code>.
       </div>
     </div>

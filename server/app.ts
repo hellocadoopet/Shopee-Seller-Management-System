@@ -22,7 +22,7 @@ import {
 import { fetchOrders } from "../lib/orders";
 import { computeBasket, orderSizeBucket } from "../lib/analytics";
 import { matchRule, rules, suggestReply } from "../lib/chatbot";
-import { generateReply, getLlmConfig } from "../lib/llm";
+import { generateReply, getLlmConfig, KEY_ENV } from "../lib/llm";
 
 export const app = new Hono().basePath("/api");
 
@@ -302,12 +302,12 @@ app.post("/chat/suggest", async (c) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// AI settings (read-only — configured via LLM_PROVIDER / LLM_API_KEY / LLM_MODEL env)
+// AI settings (read-only — configured via env, see lib/llm.ts getLlmConfig)
 // ─────────────────────────────────────────────────────────────
 
 app.get("/settings", (c) => {
   const { provider, model, apiKey } = getLlmConfig();
-  return c.json({ provider, model, hasKey: !!apiKey });
+  return c.json({ provider, model, hasKey: !!apiKey, keyEnv: KEY_ENV[provider] });
 });
 
 app.post("/settings/test", async (c) => {

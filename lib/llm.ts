@@ -21,6 +21,13 @@ export const DEFAULT_MODELS: Record<LlmProvider, string> = {
   deepseek: "deepseek-chat",
 };
 
+// Env var holding each provider's key.
+export const KEY_ENV: Record<LlmProvider, string> = {
+  claude: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+  deepseek: "DEEPSEEK_API_KEY",
+};
+
 // Where to get an API key — shown in the Settings UI.
 export const KEY_HELP: Record<LlmProvider, string> = {
   claude: "console.anthropic.com → API Keys",
@@ -28,10 +35,10 @@ export const KEY_HELP: Record<LlmProvider, string> = {
   deepseek: "platform.deepseek.com → API keys",
 };
 
-/** AI settings come from env: LLM_PROVIDER, LLM_API_KEY, LLM_MODEL (optional). */
+/** AI settings from env: LLM_PROVIDER picks the provider; its key comes from ANTHROPIC_/OPENAI_/DEEPSEEK_API_KEY. */
 export function getLlmConfig(): LlmConfig {
   const provider = (Object.keys(PROVIDER_LABELS).includes(config.llm.provider) ? config.llm.provider : "claude") as LlmProvider;
-  return { provider, apiKey: config.llm.apiKey, model: config.llm.model || DEFAULT_MODELS[provider] };
+  return { provider, apiKey: config.llm.keys[provider], model: config.llm.model || DEFAULT_MODELS[provider] };
 }
 
 /**
@@ -45,7 +52,7 @@ export async function generateReply(
   userPrompt: string,
 ): Promise<string> {
   if (!cfg.apiKey) {
-    throw new Error("No AI API key configured. Set LLM_API_KEY in env.");
+    throw new Error(`No API key for ${cfg.provider}. Set ${KEY_ENV[cfg.provider]} in env.`);
   }
 
   if (cfg.provider === "claude") {

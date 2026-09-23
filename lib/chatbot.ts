@@ -1,4 +1,4 @@
-import { generateReply, getLlmConfig } from "./llm";
+import { generateReply, getLlmConfig, KEY_ENV } from "./llm";
 import chatbotConfig from "../config/chatbot.json";
 
 /** Keyword rules, checked in file order (first match wins). Edit config/chatbot.json. */
@@ -57,7 +57,7 @@ export function matchRule(buyerMessage: string, rules: ChatbotRule[]): RuleMatch
 export async function suggestReply(buyerMessage: string): Promise<string> {
   const cfg = getLlmConfig();
   if (!cfg.apiKey) {
-    return "(No AI connected — set LLM_PROVIDER and LLM_API_KEY in env)";
+    return `(No AI connected — set ${KEY_ENV[cfg.provider]} in env)`;
   }
 
   const examples = toneExamples.slice(0, 10).map((r, i) => `${i + 1}. ${r}`).join("\n");

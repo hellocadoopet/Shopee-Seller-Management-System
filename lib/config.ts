@@ -17,7 +17,12 @@ export const config = {
   tokenEncryptionKey: process.env.TOKEN_ENCRYPTION_KEY ?? "",
   llm: {
     provider: process.env.LLM_PROVIDER ?? "claude",
-    apiKey: process.env.LLM_API_KEY ?? "",
+    // One key per provider; LLM_PROVIDER picks which one is used.
+    keys: {
+      claude: process.env.ANTHROPIC_API_KEY ?? "",
+      openai: process.env.OPENAI_API_KEY ?? "",
+      deepseek: process.env.DEEPSEEK_API_KEY ?? "",
+    },
     model: process.env.LLM_MODEL ?? "",
   },
 };

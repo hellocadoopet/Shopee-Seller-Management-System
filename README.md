@@ -26,7 +26,7 @@ Single owner, multiple shops. Not a multi-tenant SaaS.
 - **Rules first:** keyword → template (instant, free). Rules live in `config/chatbot.json`.
 - **Then AI:** if no rule matches, the AI drafts a reply, copying the tone of the `tone_examples` in `config/chatbot.json`.
 - **You approve:** the AI never auto-sends — you click Send. (Assistant mode.)
-- **Your choice of AI:** Claude, ChatGPT (OpenAI), or DeepSeek — set `LLM_PROVIDER` + `LLM_API_KEY` in env.
+- **Your choice of AI:** Claude, ChatGPT (OpenAI), or DeepSeek — set `LLM_PROVIDER` + that provider's key in env (keep all three keys, switch with one variable).
 
 ---
 
@@ -75,8 +75,8 @@ npm run dev
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase secret key (server only) |
 | `TOKEN_ENCRYPTION_KEY` | 32-byte base64 — encrypts stored Shopee tokens |
 | `APP_PASSWORD` | Login password for the app. **Empty = no lock (local dev).** |
-| `LLM_PROVIDER` | Optional — `claude` (default), `openai`, or `deepseek` |
-| `LLM_API_KEY` | Optional — API key for that provider (chat reply suggestions) |
+| `LLM_PROVIDER` | Optional — which AI writes chat replies: `claude` (default), `openai`, or `deepseek` |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` | Optional — one key per provider; only the one `LLM_PROVIDER` picks is used |
 | `LLM_MODEL` | Optional — leave empty for the provider default |
 
 > `.env.local` is never uploaded to GitHub (it's in `.gitignore`). Each person recreates it locally.
