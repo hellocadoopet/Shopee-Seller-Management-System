@@ -3,7 +3,7 @@ import { config } from "./config";
 
 // Shopee Open Platform v2 hosts (Southeast Asia region — Malaysia/Singapore/etc.)
 const HOSTS = {
-  live: "https://openplatform.shopeemobile.com",
+  live: "https://partner.shopeemobile.com",
   sandbox: "https://openplatform.sandbox.test-stable.shopee.sg",
 } as const;
 
