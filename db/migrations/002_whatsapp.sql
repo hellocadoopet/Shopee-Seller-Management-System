@@ -45,10 +45,17 @@ create table wa_messages (
   direction text not null check (direction in ('in', 'out')),
   type text not null default 'text', -- text | image | video | audio | document | sticker | other
   body text,                         -- text, or the caption of a media message
+  media_path text,                   -- object in the private 'media' bucket; null = no file (text, history media, too big)
+  media_mime text,
+  media_filename text,               -- documents: the sender's file name
   status text,                       -- out only: sent | delivered | read | failed
   created_at timestamptz not null default now(),
   unique (account_id, wa_message_id) -- dedupe: Baileys can deliver the same message twice
 );
 create index wa_messages_thread on wa_messages (conversation_id, created_at);
+
+-- Private media bucket, shared by platforms (WhatsApp files live under whatsapp/<account>/<conversation>/).
+-- The worker uploads; the dashboard hands out short-lived signed URLs. Never make it public.
+insert into storage.buckets (id, name, public) values ('media', 'media', false) on conflict (id) do nothing;
 
 commit;

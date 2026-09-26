@@ -127,7 +127,41 @@ app.get("/:platform/callback", async (c) => {
   }
 });
 
-/** Webhook subscription check (WhatsApp/Meta does a GET handshake; Shopee doesn't). */
+/**
+ * QR pairing (WhatsApp). The browser starts a pairing, then polls it every ~2s to show the
+ * current QR; on "connected" the platform has already created the shop.
+ */
+function pairingFor(c: Context, platform: string) {
+  if (!isPlatform(platform)) return c.json({ error: `Unknown platform: ${platform}` }, 404);
+  const adapter = getAdapter(platform);
+  if (!adapter.pairing) return c.json({ error: `${adapter.label} doesn't pair by QR code` }, 400);
+  const missing = adapter.missingConfig();
+  if (missing.length) throw new Error(`Missing env: ${missing.join(", ")}`);
+  return adapter.pairing;
+}
+
+app.post("/:platform/pairings", async (c) => {
+  const pairing = pairingFor(c, c.req.param("platform"));
+  if (pairing instanceof Response) return pairing;
+  const { label } = await c.req.json<{ label?: string }>().catch(() => ({ label: undefined }));
+  const { pairingId } = await pairing.start(label?.trim() || undefined);
+  return c.json({ pairing_id: pairingId });
+});
+
+app.get("/:platform/pairings/:id", async (c) => {
+  const pairing = pairingFor(c, c.req.param("platform"));
+  if (pairing instanceof Response) return pairing;
+  return c.json(await pairing.status(c.req.param("id")));
+});
+
+app.delete("/:platform/pairings/:id", async (c) => {
+  const pairing = pairingFor(c, c.req.param("platform"));
+  if (pairing instanceof Response) return pairing;
+  await pairing.cancel(c.req.param("id"));
+  return c.json({ ok: true });
+});
+
+/** Webhook subscription check, for platforms that do a GET handshake (Shopee doesn't). */
 app.get("/:platform/webhook", (c) => {
   const platform = c.req.param("platform");
   const hook = isPlatform(platform) ? getCapability(platform, "webhook") : null;

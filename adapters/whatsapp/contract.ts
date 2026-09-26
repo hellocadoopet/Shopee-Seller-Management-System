@@ -3,11 +3,27 @@
  *
  *   - The worker owns the Baileys sockets. It writes wa_accounts / wa_contacts / wa_conversations /
  *     wa_messages (db/migrations/002_whatsapp.sql) and, when a number finishes pairing, its `shops` row.
+ *   - Media of live messages (≤ MEDIA_MAX_BYTES) is uploaded by the worker to the private Storage
+ *     bucket MEDIA_BUCKET; history-sync media stays a placeholder (media_path null).
  *   - The dashboard reads those tables directly (so the inbox works even while the worker restarts)
  *     and calls the worker's HTTP API only for things that need the live socket: pairing and sending.
  *
  * Worker HTTP API — every route except GET /health requires `Authorization: Bearer <WA_WORKER_SECRET>`.
  */
+
+/** Private bucket shared by every platform; each platform keeps its files under its own prefix. */
+export const MEDIA_BUCKET = "media";
+/** Larger files aren't downloaded (the worker holds each one in memory; Supabase free tier caps files at 50 MB). */
+export const MEDIA_MAX_BYTES = 25 * 1024 * 1024;
+
+/**
+ * Where a message's file is stored in MEDIA_BUCKET: whatsapp/<account>/<conversation>/<message>.<ext>
+ * Grouped by conversation so one customer's files can be deleted together. No phone numbers, names
+ * or original file names in the path — paths show up in dashboards and logs (the name is in media_filename).
+ */
+export function mediaObjectPath(p: { accountId: string; conversationId: string; waMessageId: string; ext: string }): string {
+  return `whatsapp/${p.accountId}/${p.conversationId}/${p.waMessageId}.${p.ext}`;
+}
 
 // ─── Table rows (snake_case, as stored) ───
 
@@ -50,6 +66,10 @@ export interface WaMessageRow {
   direction: "in" | "out";
   type: WaMessageType;
   body: string | null;
+  /** Object path in MEDIA_BUCKET — see mediaObjectPath(). */
+  media_path: string | null;
+  media_mime: string | null;
+  media_filename: string | null;
   status: "sent" | "delivered" | "read" | "failed" | null;
   created_at: string;
 }

@@ -5,6 +5,7 @@ import "./index.css";
 import Home from "./pages/Home";
 import Login from "./pages/Login";
 import Connect from "./pages/Connect";
+import Pair from "./pages/Pair";
 import DashboardLayout from "./pages/DashboardLayout";
 import Overview from "./pages/Overview";
 import Products from "./pages/Products";
@@ -25,6 +26,7 @@ createRoot(document.getElementById("root")!).render(
         <Route element={<RequireAuth />}>
           <Route path="/" element={<Home />} />
           <Route path="/connect" element={<Connect />} />
+          <Route path="/connect/:platform" element={<Pair />} />
           <Route path="/dashboard" element={<DashboardLayout />}>
             <Route index element={<Overview />} />
             <Route path="products" element={<Products />} />

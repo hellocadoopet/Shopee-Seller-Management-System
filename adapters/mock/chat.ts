@@ -57,6 +57,7 @@ function store({ externalId }: Credentials): Store {
         type: "text",
         text,
         url: null,
+        filename: null,
         at: now - ago * 60_000,
       }));
       st!.messages.set(id, msgs);
@@ -91,7 +92,7 @@ export const mockChat: ChatCapability = {
     const conv = st.conversations.find((c) => c.id === conversationId);
     if (!conv) throw new Error(`mock chat: no conversation ${conversationId}`);
     const at = Date.now();
-    st.messages.get(conversationId)!.push({ id: `${conversationId}-${at}`, from: "shop", type: "text", text, url: null, at });
+    st.messages.get(conversationId)!.push({ id: `${conversationId}-${at}`, from: "shop", type: "text", text, url: null, filename: null, at });
     Object.assign(conv, { last_text: text, last_at: at, unread: 0 });
   },
 };

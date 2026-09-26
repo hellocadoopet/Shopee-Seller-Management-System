@@ -61,6 +61,7 @@ export function toMessage(m: ShopeeMessage, shopId: number): Message {
     type: m.message_type,
     text: m.content.text ?? null,
     url: m.content.url ?? null,
+    filename: null,
     at: toMs(m.created_timestamp) ?? 0,
   };
 }

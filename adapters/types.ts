@@ -78,7 +78,8 @@ export interface Message {
   from: "shop" | "customer";
   type: string; // "text", "image", "sticker", …
   text: string | null;
-  url: string | null;
+  url: string | null; // media file (image, video, voice note, document…), when viewable
+  filename: string | null; // documents: the sender's file name
   at: number;
 }
 
@@ -115,6 +116,21 @@ export interface ConnectCapability {
   completeAuthorization(query: Record<string, string>): Promise<{ externalId: string; name: string | null; tokens: IssuedTokens }>;
   /** Swap a refresh token for new tokens. Omitted by platforms whose tokens don't expire. */
   refresh?(refreshToken: string, externalId: string): Promise<IssuedTokens>;
+}
+
+/** Link a device by scanning a QR code on screen (WhatsApp) — the alternative to `connect`. */
+export interface PairingCapability {
+  start(label?: string): Promise<{ pairingId: string }>;
+  /** Poll while the QR is shown. On "connected" the shop already exists. */
+  status(pairingId: string): Promise<PairingStatus>;
+  cancel(pairingId: string): Promise<void>;
+}
+
+export interface PairingStatus {
+  state: "starting" | "qr" | "connected" | "failed";
+  qr?: string; // image data: URL of the current QR code
+  shop_id?: string; // set when connected
+  reason?: string; // set when failed
 }
 
 export interface CatalogCapability {
@@ -168,7 +184,10 @@ export interface PlatformAdapter {
   label: string;
   /** Names of required env vars that are missing; empty = ready to use. */
   missingConfig(): string[];
+  /** True when the platform holds its own session (WhatsApp's worker) — no stored tokens to load. */
+  tokenless?: boolean;
   connect?: ConnectCapability;
+  pairing?: PairingCapability;
   catalog?: CatalogCapability;
   orders?: OrdersCapability;
   chat?: ChatCapability;
@@ -177,14 +196,6 @@ export interface PlatformAdapter {
   webhook?: WebhookCapability;
 }
 
-export type Capability = "connect" | "catalog" | "orders" | "chat" | "promotions" | "ads" | "webhook";
+export type Capability = "connect" | "pairing" | "catalog" | "orders" | "chat" | "promotions" | "ads" | "webhook";
 
-export const CAPABILITIES: Capability[] = ["connect", "catalog", "orders", "chat", "promotions", "ads", "webhook"];
-
-/** A platform refused an operation it doesn't support (as opposed to failing at it). */
-export class NotSupportedError extends Error {
-  constructor(platform: PlatformId, what: string) {
-    super(`${platform}: ${what} is not supported`);
-    this.name = "NotSupportedError";
-  }
-}
+export const CAPABILITIES: Capability[] = ["connect", "pairing", "catalog", "orders", "chat", "promotions", "ads", "webhook"];

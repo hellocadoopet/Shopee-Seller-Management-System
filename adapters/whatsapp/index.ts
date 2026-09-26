@@ -1,48 +1,55 @@
 /**
- * WhatsApp Cloud API — scaffold. What works: sending a reply, and the webhook handshake +
- * signature check. What's missing before a WhatsApp number can be used:
- *   - connect: Meta's Embedded Signup (Facebook Login) to obtain a number's token. Until then no
- *     WhatsApp shop can be created, so none of this is reachable from the UI.
- *   - an inbox: the Cloud API has no endpoint to read chat history. Incoming messages arrive only
- *     via the webhook, so they must be stored (a messages table) for listConversations/listMessages.
+ * WhatsApp via Baileys (the WhatsApp Web linked-device protocol), not Meta's official Cloud API.
+ * The sockets live in the always-on worker (worker/), which Vercel can't host. This adapter:
+ *   - reads chats from the tables the worker writes — the inbox works even while the worker restarts;
+ *   - calls the worker for what needs the live socket: pairing (QR) and sending.
+ * Scope today: read 1:1 chats (with media of live messages) and reply with text. No groups,
+ * campaigns or auto-reply.
  */
-import { NotSupportedError, type PlatformAdapter } from "../types.js";
-import { missingWhatsappConfig, whatsappConfig } from "./config.js";
-import { sendText } from "./api/index.js";
-import type { WebhookPayload } from "./types.js";
-import { verifySignature } from "./utils/signature.js";
+import type { PlatformAdapter } from "../types.js";
+import { missingWhatsappConfig } from "./config.js";
+import * as store from "./api/store.js";
+import * as worker from "./api/worker.js";
+import { toConversation, toMessage } from "./utils/mappers.js";
 
 export const whatsapp: PlatformAdapter = {
   id: "whatsapp",
   label: "WhatsApp",
   missingConfig: missingWhatsappConfig,
+  tokenless: true, // the worker holds each number's session; nothing stored in shop_tokens
 
-  chat: {
-    async listConversations() {
-      throw new NotSupportedError("whatsapp", "reading conversations (needs webhook message storage)");
+  pairing: {
+    async start(label) {
+      return { pairingId: (await worker.startPairing({ label })).pairing_id };
     },
-    async listMessages() {
-      throw new NotSupportedError("whatsapp", "reading messages (needs webhook message storage)");
+    async status(pairingId) {
+      try {
+        const s = await worker.getPairing(pairingId);
+        return { state: s.state, qr: s.qr_data_url, shop_id: s.shop_id, reason: s.reason };
+      } catch (e) {
+        if (e instanceof worker.WorkerError && e.status === 404) return { state: "failed", reason: "This QR code expired — start again." };
+        throw e;
+      }
     },
-    /** On WhatsApp the conversation is the customer's number, so peerId is their wa_id. */
-    async send({ accessToken, externalId }, { peerId }, text) {
-      await sendText(accessToken, externalId, peerId, text);
+    async cancel(pairingId) {
+      await worker.cancelPairing(pairingId);
     },
   },
 
-  webhook: {
-    challenge(query) {
-      const ok = query["hub.mode"] === "subscribe" && !!whatsappConfig.verifyToken && query["hub.verify_token"] === whatsappConfig.verifyToken;
-      return ok ? (query["hub.challenge"] ?? null) : null;
+  chat: {
+    // One page of the newest conversations (60); the worker keeps them ordered by last message.
+    async listConversations({ externalId }, { unreadOnly }) {
+      return { conversations: (await store.listConversations(externalId, unreadOnly)).map(toConversation), next: null };
     },
-    verify(req) {
-      return verifySignature(whatsappConfig.appSecret, req.body, req.header("x-hub-signature-256"));
+    async listMessages({ externalId }, conversationId) {
+      const messages = await store.listMessages(externalId, conversationId);
+      const [urls] = await Promise.all([store.signMediaUrls(messages), store.markRead(externalId, conversationId)]);
+      return messages.map((m) => toMessage(m, m.media_path ? (urls.get(m.media_path) ?? null) : null));
     },
-    async handle(body) {
-      const payload = JSON.parse(body) as WebhookPayload;
-      const incoming = payload.entry.flatMap((e) => e.changes.flatMap((c) => c.value.messages ?? []));
-      // TODO persist incoming messages so the inbox can list them (see header comment)
-      console.log("WhatsApp webhook:", { messages: incoming.length });
+    async send({ externalId }, { conversationId }, text) {
+      const jid = await store.replyTarget(externalId, conversationId);
+      if (!jid) throw new Error("whatsapp: conversation not found on this number");
+      await worker.sendText(externalId, { jid, text });
     },
   },
 };

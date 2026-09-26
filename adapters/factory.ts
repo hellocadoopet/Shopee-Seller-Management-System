@@ -36,7 +36,9 @@ export function describePlatforms() {
       id,
       label: adapter.label,
       capabilities: CAPABILITIES.filter((cap) => adapter[cap]),
-      connectable: !!adapter.connect && missing.length === 0,
+      /** How a shop gets added: an OAuth redirect, or scanning a QR code on screen. */
+      connect_via: adapter.connect ? "oauth" : adapter.pairing ? "pairing" : null,
+      connectable: !!(adapter.connect || adapter.pairing) && missing.length === 0,
       missing_config: missing,
     };
   });

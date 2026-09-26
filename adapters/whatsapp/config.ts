@@ -1,17 +1,13 @@
 export const whatsappConfig = {
-  /** Meta app secret — signs every webhook POST (X-Hub-Signature-256). */
-  appSecret: process.env.WHATSAPP_APP_SECRET ?? "",
-  /** Any string you choose; Meta echoes it back when you subscribe the webhook. */
-  verifyToken: process.env.WHATSAPP_VERIFY_TOKEN ?? "",
-  // Graph API versions are retired about two years after release — keep this current.
-  graphVersion: process.env.WHATSAPP_GRAPH_VERSION || "v21.0",
+  /** Public HTTPS URL of the always-on worker (worker/), e.g. https://wa.example.com */
+  workerUrl: (process.env.WA_WORKER_URL ?? "").replace(/\/+$/, ""),
+  /** Shared secret; the worker requires it as a Bearer token on every call. */
+  workerSecret: process.env.WA_WORKER_SECRET ?? "",
 };
-
-export const GRAPH_HOST = "https://graph.facebook.com";
 
 export function missingWhatsappConfig(): string[] {
   const missing: string[] = [];
-  if (!whatsappConfig.appSecret) missing.push("WHATSAPP_APP_SECRET");
-  if (!whatsappConfig.verifyToken) missing.push("WHATSAPP_VERIFY_TOKEN");
+  if (!whatsappConfig.workerUrl) missing.push("WA_WORKER_URL");
+  if (!whatsappConfig.workerSecret) missing.push("WA_WORKER_SECRET");
   return missing;
 }

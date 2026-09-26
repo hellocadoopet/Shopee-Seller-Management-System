@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { RefreshCw, Sparkles, Send } from "lucide-react";
 import { useShopParam } from "../lib/shops";
-import { useFetch, type ShopList } from "../lib/useFetch";
+import { useFetch, usePoll, type ShopList } from "../lib/useFetch";
 import { ShopBadge, ShopErrors, useMultiShop } from "../components/Shop";
 
 interface Conversation {
@@ -18,8 +18,28 @@ interface Message {
   from: "shop" | "customer";
   type: string;
   text: string | null;
-  url: string | null;
+  url: string | null; // media file, when viewable
+  filename: string | null;
   at: number; // epoch ms
+}
+
+/** The file of a media message, or a placeholder when it can't be shown (e.g. from history sync). */
+function Media({ m, url }: { m: Message; url: string | null }) {
+  if (m.type === "text") return null;
+  if (!url) return <span className="italic opacity-70">[{m.type}]</span>;
+  if (m.type === "image" || m.type === "sticker")
+    return (
+      <a href={url} target="_blank" rel="noreferrer">
+        <img src={url} alt={m.filename ?? m.type} loading="lazy" className={`rounded-lg ${m.type === "sticker" ? "w-32" : "max-h-72"}`} />
+      </a>
+    );
+  if (m.type === "video") return <video src={url} controls preload="metadata" className="rounded-lg max-h-72" />;
+  if (m.type === "audio") return <audio src={url} controls preload="metadata" className="max-w-full" />;
+  return (
+    <a href={url} target="_blank" rel="noreferrer" className="underline break-all">
+      📄 {m.filename ?? "Document"}
+    </a>
+  );
 }
 
 function timeLabel(ms: number | null): string {
@@ -39,6 +59,7 @@ export default function ChatPage() {
   const list = useFetch<ShopList<Conversation>>(
     `/api/chat/conversations?shop=${shop}&type=${unreadOnly ? "unread" : "all"}`,
   );
+  usePoll(list.reload, 15_000);
   const [selected, setSelected] = useState<string | null>(null);
   const conv = list.data?.items.find((c) => convKey(c) === selected) ?? null;
 
@@ -117,11 +138,18 @@ function Thread({ conv, onSent }: { conv: Conversation & { shop_id: string; shop
   const thread = useFetch<{ messages: Message[] }>(
     `/api/chat/messages?shop_id=${conv.shop_id}&conversation_id=${encodeURIComponent(conv.id)}`,
   );
+  usePoll(thread.reload, 10_000);
   const [draft, setDraft] = useState("");
   const [draftSource, setDraftSource] = useState<string | null>(null);
   const [busy, setBusy] = useState<"suggest" | "send" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
+  // Each poll returns freshly signed media URLs; keep the first one per message so files don't reload every 10s.
+  const mediaUrls = useRef(new Map<string, string>());
+  const urlOf = (m: Message) => {
+    if (m.url && !mediaUrls.current.has(m.id)) mediaUrls.current.set(m.id, m.url);
+    return mediaUrls.current.get(m.id) ?? null;
+  };
 
   const messages = [...(thread.data?.messages ?? [])].sort((a, b) => a.at - b.at);
   const isSeller = (m: Message) => m.from === "shop";
@@ -195,7 +223,9 @@ function Thread({ conv, onSent }: { conv: Conversation & { shop_id: string; shop
                 isSeller(m) ? "bg-shopee text-white rounded-br-sm" : "bg-white border border-gray-200 rounded-bl-sm"
               }`}
             >
-              {m.text ?? <span className="italic opacity-70">[{m.type}]</span>}
+              <Media m={m} url={urlOf(m)} />
+              {m.text && <div className={m.type === "text" ? "" : "mt-1"}>{m.text}</div>}
+              {!m.text && m.type === "text" && <span className="italic opacity-70">[empty]</span>}
               <div className={`text-[10px] mt-1 ${isSeller(m) ? "text-white/70" : "text-gray-400"}`}>
                 {timeLabel(m.at)}
               </div>

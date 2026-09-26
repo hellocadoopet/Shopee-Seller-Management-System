@@ -27,6 +27,9 @@ export async function saveTokens(shopUuid: string, tokens: IssuedTokens) {
  * Solo system, single user — no locking around concurrent refreshes.
  */
 export async function getCredentials(shop: Shop): Promise<Credentials> {
+  const adapter = getAdapter(shop.platform);
+  if (adapter.tokenless) return { externalId: shop.external_id, accessToken: "" };
+
   const { data: tok, error } = await supabase
     .from("shop_tokens")
     .select("access_token_enc, refresh_token_enc, access_expires_at")
@@ -34,7 +37,7 @@ export async function getCredentials(shop: Shop): Promise<Credentials> {
     .single();
   if (error || !tok) throw new Error(`tokens for shop ${shop.id} not found`);
 
-  const refresh = getAdapter(shop.platform).connect?.refresh;
+  const refresh = adapter.connect?.refresh;
   const expiring = tok.access_expires_at && new Date(tok.access_expires_at).getTime() - Date.now() < REFRESH_MARGIN_MS;
   if (expiring && refresh && tok.refresh_token_enc) {
     const fresh = await refresh(decrypt(tok.refresh_token_enc), shop.external_id);
