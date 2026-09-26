@@ -1,5 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { config } from "./config";
+import { config } from "./config.js";
 
 // Service role bypasses RLS — only use server-side.
 // Created on first use so missing env fails that request, not the whole API process at import.

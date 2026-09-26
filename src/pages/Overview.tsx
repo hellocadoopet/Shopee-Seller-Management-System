@@ -3,14 +3,15 @@ import { useShopParam } from "../lib/shops";
 import { useFetch } from "../lib/useFetch";
 import { ShopBadge, useMultiShop } from "../components/Shop";
 
-type Section<T> = { ok: true; data: T } | { ok: false; error: string };
+/** null = this shop's platform doesn't have the feature (e.g. a WhatsApp number has no products). */
+type Section<T> = { ok: true; data: T } | { ok: false; error: string } | null;
 
 interface ShopOverview {
   shop_id: string;
   shop_name: string;
   today: Section<{ orders: number; revenue: number; currency: string }>;
   chats: Section<{ conversations: number; messages: number }>;
-  products: Section<{ total: number; low_stock: Array<{ item_id: number; item_name: string; stock: number }> }>;
+  products: Section<{ total: number; low_stock: Array<{ id: string; name: string; stock: number }> }>;
 }
 
 /** Sum a metric over the shops whose section loaded; `failed` counts the ones that didn't. */
@@ -18,6 +19,7 @@ function total<T>(shops: ShopOverview[], pick: (s: ShopOverview) => Section<T>, 
   let sum = 0, failed = 0;
   for (const s of shops) {
     const sec = pick(s);
+    if (!sec) continue;
     if (sec.ok) sum += value(sec.data);
     else failed++;
   }
@@ -36,7 +38,7 @@ function Tile({ label, value, sub, failed, loading }: { label: string; value: st
 }
 
 const cell = <T,>(sec: Section<T>, show: (d: T) => React.ReactNode) =>
-  sec.ok ? show(sec.data) : <span className="text-red-600 text-xs" title={sec.error}>error</span>;
+  !sec ? <span className="text-gray-300">—</span> : sec.ok ? show(sec.data) : <span className="text-red-600 text-xs" title={sec.error}>error</span>;
 
 export default function OverviewPage() {
   const [shop] = useShopParam();
@@ -51,7 +53,7 @@ export default function OverviewPage() {
   const unreadMsgs = total(shops, (s) => s.chats, (d) => d.messages);
   const products = total(shops, (s) => s.products, (d) => d.total);
   const lowStock = shops.flatMap((s) =>
-    s.products.ok ? s.products.data.low_stock.map((it) => ({ ...it, shop_id: s.shop_id, shop_name: s.shop_name })) : [],
+    s.products?.ok ? s.products.data.low_stock.map((it) => ({ ...it, shop_id: s.shop_id, shop_name: s.shop_name })) : [],
   );
   lowStock.sort((a, b) => a.stock - b.stock);
 
@@ -119,13 +121,13 @@ export default function OverviewPage() {
             <table className="w-full text-sm">
               <tbody>
                 {lowStock.map((it) => (
-                  <tr key={`${it.shop_id}:${it.item_id}`} className="border-t first:border-t-0">
+                  <tr key={`${it.shop_id}:${it.id}`} className="border-t first:border-t-0">
                     {multi && (
                       <td className="py-2 w-44">
                         <ShopBadge shopId={it.shop_id} name={it.shop_name} />
                       </td>
                     )}
-                    <td className="py-2">{it.item_name}</td>
+                    <td className="py-2">{it.name}</td>
                     <td className={`py-2 text-right font-semibold ${it.stock === 0 ? "text-red-600" : "text-amber-600"}`}>{it.stock} left</td>
                   </tr>
                 ))}

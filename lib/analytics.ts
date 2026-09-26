@@ -1,8 +1,8 @@
-import type { ShopeeOrderDetail } from "./shopee";
+import type { Order } from "../adapters/types.js";
 
 export interface BasketPair {
-  item_a: number;
-  item_b: number;
+  product_a: string;
+  product_b: string;
   support: number;
   confidence: number;
   lift: number;
@@ -10,47 +10,44 @@ export interface BasketPair {
 }
 
 /**
- * Market basket — "buyers who bought X also bought Y".
- * Computed from the orders passed in (fetched live from Shopee).
+ * Market basket — "buyers who bought X also bought Y" — over the orders passed in.
+ * Product ids are only unique within a shop, so call this once per shop.
  */
-export function computeBasket(orders: ShopeeOrderDetail[], opts: { minSupport?: number; minCoOrders?: number } = {}) {
+export function computeBasket(orders: Order[], opts: { minSupport?: number; minCoOrders?: number } = {}) {
   const minSupport = opts.minSupport ?? 0.01;
   const minCoOrders = opts.minCoOrders ?? 5;
 
-  const ordersToItems = new Map<string, Set<number>>();
-  for (const o of orders) {
-    const items = new Set((o.item_list ?? []).map((it) => it.item_id));
-    if (items.size) ordersToItems.set(o.order_sn, items);
-  }
-
-  const totalOrders = ordersToItems.size;
+  const baskets = orders.map((o) => new Set(o.lines.map((l) => l.product_id))).filter((s) => s.size);
+  const totalOrders = baskets.length;
   if (!totalOrders) return [];
 
-  const itemCount = new Map<number, number>();
-  const pairCount = new Map<string, number>();
+  const itemCount = new Map<string, number>();
+  const pairCount = new Map<string, { a: string; b: string; n: number }>();
 
-  for (const items of ordersToItems.values()) {
-    const arr = [...items].sort((a, b) => a - b);
+  for (const items of baskets) {
+    const arr = [...items].sort((x, y) => x.localeCompare(y, undefined, { numeric: true }));
     for (const i of arr) itemCount.set(i, (itemCount.get(i) ?? 0) + 1);
     for (let i = 0; i < arr.length; i++) {
       for (let j = i + 1; j < arr.length; j++) {
-        const k = `${arr[i]}_${arr[j]}`;
-        pairCount.set(k, (pairCount.get(k) ?? 0) + 1);
+        const [a, b] = [arr[i]!, arr[j]!];
+        const key = JSON.stringify([a, b]);
+        const p = pairCount.get(key) ?? { a, b, n: 0 };
+        p.n++;
+        pairCount.set(key, p);
       }
     }
   }
 
   const result: BasketPair[] = [];
-  for (const [k, co] of pairCount) {
+  for (const { a, b, n: co } of pairCount.values()) {
     if (co < minCoOrders) continue;
-    const [a, b] = k.split("_").map(Number) as [number, number];
     const support = co / totalOrders;
     if (support < minSupport) continue;
     const supA = (itemCount.get(a) ?? 0) / totalOrders;
     const supB = (itemCount.get(b) ?? 0) / totalOrders;
     result.push({
-      item_a: a,
-      item_b: b,
+      product_a: a,
+      product_b: b,
       support: round(support),
       confidence: round(co / (itemCount.get(a) ?? 1)),
       lift: supA && supB ? round(support / (supA * supB)) : 0,

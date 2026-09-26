@@ -5,38 +5,32 @@ import { useFetch, type ShopList } from "../lib/useFetch";
 import { ShopBadge, ShopErrors, useMultiShop } from "../components/Shop";
 
 interface Conversation {
-  conversation_id: string;
-  to_id: number;
-  to_name?: string;
-  unread_count: number;
-  latest_message_content?: { text?: string };
-  last_message_timestamp?: number;
+  id: string;
+  peer_id: string;
+  peer_name: string | null;
+  unread: number;
+  last_text: string | null;
+  last_at: number | null; // epoch ms
 }
 
 interface Message {
-  message_id: string;
-  from_shop_id: number;
-  message_type: string;
-  content: { text?: string; url?: string };
-  created_timestamp: number;
+  id: string;
+  from: "shop" | "customer";
+  type: string;
+  text: string | null;
+  url: string | null;
+  at: number; // epoch ms
 }
 
-/** Shopee mixes units: conversation times are nanoseconds, message times seconds. */
-function toDate(ts: number | undefined): Date | null {
-  if (!ts) return null;
-  if (ts > 1e17) return new Date(ts / 1e6); // ns
-  if (ts > 1e11) return new Date(ts); // ms
-  return new Date(ts * 1000); // s
-}
-
-function timeLabel(ts: number | undefined): string {
-  const d = toDate(ts);
-  if (!d) return "";
+function timeLabel(ms: number | null): string {
+  if (!ms) return "";
+  const d = new Date(ms);
   const sameDay = d.toDateString() === new Date().toDateString();
   return sameDay ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : d.toLocaleDateString([], { day: "numeric", month: "short" });
 }
 
-const convKey = (c: { shop_id: string; conversation_id: string }) => `${c.shop_id}:${c.conversation_id}`;
+const convKey = (c: { shop_id: string; id: string }) => `${c.shop_id}:${c.id}`;
+const peerName = (c: Conversation) => c.peer_name ?? `Customer ${c.peer_id}`;
 
 export default function ChatPage() {
   const [shop] = useShopParam();
@@ -48,7 +42,7 @@ export default function ChatPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const conv = list.data?.items.find((c) => convKey(c) === selected) ?? null;
 
-  const totalUnread = list.data?.items.reduce((s, c) => s + c.unread_count, 0) ?? 0;
+  const totalUnread = list.data?.items.reduce((s, c) => s + c.unread, 0) ?? 0;
 
   return (
     <div className="flex flex-col h-[calc(100vh-8rem)]">
@@ -89,13 +83,13 @@ export default function ChatPage() {
                 className={`w-full text-left px-4 py-3 border-b border-gray-100 hover:bg-gray-50 ${selected === convKey(c) ? "bg-orange-50" : ""}`}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className={`truncate ${c.unread_count ? "font-semibold" : ""}`}>{c.to_name ?? `Buyer ${c.to_id}`}</span>
-                  <span className="text-xs text-gray-400 shrink-0">{timeLabel(c.last_message_timestamp)}</span>
+                  <span className={`truncate ${c.unread ? "font-semibold" : ""}`}>{peerName(c)}</span>
+                  <span className="text-xs text-gray-400 shrink-0">{timeLabel(c.last_at)}</span>
                 </div>
                 <div className="flex items-center justify-between gap-2 mt-0.5">
-                  <span className="text-sm text-gray-500 truncate">{c.latest_message_content?.text ?? "…"}</span>
-                  {c.unread_count > 0 && (
-                    <span className="text-xs bg-shopee text-white rounded-full px-1.5 min-w-5 text-center shrink-0">{c.unread_count}</span>
+                  <span className="text-sm text-gray-500 truncate">{c.last_text ?? "…"}</span>
+                  {c.unread > 0 && (
+                    <span className="text-xs bg-shopee text-white rounded-full px-1.5 min-w-5 text-center shrink-0">{c.unread}</span>
                   )}
                 </div>
                 {multi && (
@@ -120,8 +114,8 @@ export default function ChatPage() {
 }
 
 function Thread({ conv, onSent }: { conv: Conversation & { shop_id: string; shop_name: string }; onSent: () => void }) {
-  const thread = useFetch<{ shopee_shop_id: number; messages: Message[] }>(
-    `/api/chat/messages?shop_id=${conv.shop_id}&conversation_id=${encodeURIComponent(conv.conversation_id)}`,
+  const thread = useFetch<{ messages: Message[] }>(
+    `/api/chat/messages?shop_id=${conv.shop_id}&conversation_id=${encodeURIComponent(conv.id)}`,
   );
   const [draft, setDraft] = useState("");
   const [draftSource, setDraftSource] = useState<string | null>(null);
@@ -129,8 +123,8 @@ function Thread({ conv, onSent }: { conv: Conversation & { shop_id: string; shop
   const [error, setError] = useState<string | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
 
-  const messages = [...(thread.data?.messages ?? [])].sort((a, b) => a.created_timestamp - b.created_timestamp);
-  const isSeller = (m: Message) => m.from_shop_id === thread.data?.shopee_shop_id;
+  const messages = [...(thread.data?.messages ?? [])].sort((a, b) => a.at - b.at);
+  const isSeller = (m: Message) => m.from === "shop";
 
   // Block body on purpose: newer Chrome's scrollIntoView() returns a Promise, and an effect must return nothing.
   useEffect(() => {
@@ -139,7 +133,7 @@ function Thread({ conv, onSent }: { conv: Conversation & { shop_id: string; shop
 
   // The buyer's latest unanswered messages — what a reply should respond to.
   const lastSeller = messages.map(isSeller).lastIndexOf(true);
-  const pending = messages.slice(lastSeller + 1).map((m) => m.content.text).filter(Boolean).join("\n");
+  const pending = messages.slice(lastSeller + 1).map((m) => m.text).filter(Boolean).join("\n");
 
   async function suggest() {
     setBusy("suggest");
@@ -168,7 +162,7 @@ function Thread({ conv, onSent }: { conv: Conversation & { shop_id: string; shop
       const r = await fetch("/api/chat/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ shop_id: conv.shop_id, to_id: conv.to_id, text: draft }),
+        body: JSON.stringify({ shop_id: conv.shop_id, conversation_id: conv.id, peer_id: conv.peer_id, text: draft }),
       });
       if (!r.ok) throw new Error(await r.text());
       setDraft("");
@@ -185,7 +179,7 @@ function Thread({ conv, onSent }: { conv: Conversation & { shop_id: string; shop
   return (
     <div className="flex-1 flex flex-col min-w-0">
       <div className="px-5 py-3 border-b border-gray-200 flex items-center justify-between">
-        <span className="font-medium">{conv.to_name ?? `Buyer ${conv.to_id}`}</span>
+        <span className="font-medium">{peerName(conv)}</span>
         <span className="text-sm">
           <ShopBadge shopId={conv.shop_id} name={conv.shop_name} />
         </span>
@@ -195,15 +189,15 @@ function Thread({ conv, onSent }: { conv: Conversation & { shop_id: string; shop
         {thread.loading && !thread.data && <p className="text-sm text-gray-400">Loading…</p>}
         {thread.error && <p className="text-sm text-red-600">Error: {thread.error}</p>}
         {messages.map((m) => (
-          <div key={m.message_id} className={`flex ${isSeller(m) ? "justify-end" : "justify-start"}`}>
+          <div key={m.id} className={`flex ${isSeller(m) ? "justify-end" : "justify-start"}`}>
             <div
               className={`max-w-[70%] rounded-2xl px-3.5 py-2 text-sm ${
                 isSeller(m) ? "bg-shopee text-white rounded-br-sm" : "bg-white border border-gray-200 rounded-bl-sm"
               }`}
             >
-              {m.content.text ?? <span className="italic opacity-70">[{m.message_type}]</span>}
+              {m.text ?? <span className="italic opacity-70">[{m.type}]</span>}
               <div className={`text-[10px] mt-1 ${isSeller(m) ? "text-white/70" : "text-gray-400"}`}>
-                {timeLabel(m.created_timestamp)}
+                {timeLabel(m.at)}
               </div>
             </div>
           </div>

@@ -4,17 +4,17 @@
  *
  * Run: npm run smoke
  */
-import { getShopeeIpRanges } from "../lib/shopee";
-import { config } from "../lib/config";
+import { getShopeeIpRanges } from "../adapters/shopee/api/index.js";
+import { shopeeConfig } from "../adapters/shopee/config.js";
 
-if (!config.shopee.partnerId || !config.shopee.partnerKey) {
+if (!shopeeConfig.partnerId || !shopeeConfig.partnerKey) {
   console.error("Set SHOPEE_PARTNER_ID and SHOPEE_PARTNER_KEY in .env.local first.");
   process.exit(1);
 }
 
-console.log(`Using SHOPEE_ENV=${config.shopee.env}`);
-console.log(`Partner ID: ${config.shopee.partnerId}`);
-console.log(`Partner Key length: ${config.shopee.partnerKey.length} chars`);
+console.log(`Using SHOPEE_ENV=${shopeeConfig.env}`);
+console.log(`Partner ID: ${shopeeConfig.partnerId}`);
+console.log(`Partner Key length: ${shopeeConfig.partnerKey.length} chars`);
 
 getShopeeIpRanges()
   .then((res) => {

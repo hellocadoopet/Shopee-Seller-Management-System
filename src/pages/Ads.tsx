@@ -3,14 +3,14 @@ import { useFetch, type ShopList } from "../lib/useFetch";
 import { ShopBadge, ShopErrors, useMultiShop } from "../components/Shop";
 
 interface Report {
-  campaign_id: number;
+  campaign_id: string;
   campaign_name: string;
-  impression: number;
-  clicks: number;
-  ctr: number;
-  expense: number;
-  gmv: number;
-  roi: number;
+  impressions: number | null;
+  clicks: number | null;
+  ctr: number | null;
+  spend: number | null;
+  gmv: number | null;
+  roas: number | null;
 }
 
 export default function AdsPage() {
@@ -49,19 +49,19 @@ export default function AdsPage() {
                   </td>
                 )}
                 <td className="px-4 py-3 font-medium">{r.campaign_name}</td>
-                <td className="px-4 py-3 text-right">{r.impression}</td>
-                <td className="px-4 py-3 text-right">{r.clicks}</td>
+                <td className="px-4 py-3 text-right">{r.impressions ?? "—"}</td>
+                <td className="px-4 py-3 text-right">{r.clicks ?? "—"}</td>
                 <td className="px-4 py-3 text-right">{r.ctr?.toFixed(2)}%</td>
-                <td className="px-4 py-3 text-right">RM {r.expense?.toFixed(2)}</td>
+                <td className="px-4 py-3 text-right">RM {r.spend?.toFixed(2)}</td>
                 <td className="px-4 py-3 text-right">RM {r.gmv?.toFixed(2)}</td>
-                <td className="px-4 py-3 text-right font-semibold">{r.roi?.toFixed(2)}x</td>
+                <td className="px-4 py-3 text-right font-semibold">{r.roas?.toFixed(2)}x</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
       <p className="text-xs text-gray-400 mt-4">
-        Read-only. Edit campaigns in Seller Center — Shopee API doesn't expose ad editing.
+        Read-only. Edit campaigns on the platform — its API doesn't expose ad editing.
       </p>
     </div>
   );

@@ -1,5 +1,5 @@
-import { generateReply, getLlmConfig, KEY_ENV } from "./llm";
-import chatbotConfig from "../config/chatbot.json";
+import { generateReply, getLlmConfig, KEY_ENV } from "./llm.js";
+import chatbotConfig from "../config/chatbot.json" with { type: "json" };
 
 /** Keyword rules, checked in file order (first match wins). Edit config/chatbot.json. */
 export interface ChatbotRule {

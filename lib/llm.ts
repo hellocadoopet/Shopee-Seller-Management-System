@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { config } from "./config";
+import { config } from "./config.js";
 
 export type LlmProvider = "claude" | "openai" | "deepseek";
 

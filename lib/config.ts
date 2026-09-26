@@ -1,15 +1,5 @@
-function required(name: string, val: string | undefined): string {
-  if (!val || val === "") throw new Error(`Missing env: ${name}`);
-  return val;
-}
-
+// Platform-neutral settings. Each platform's own env vars live in adapters/<platform>/config.ts.
 export const config = {
-  shopee: {
-    partnerId: Number(process.env.SHOPEE_PARTNER_ID ?? 0),
-    partnerKey: process.env.SHOPEE_PARTNER_KEY ?? "",
-    env: (process.env.SHOPEE_ENV ?? "sandbox") as "sandbox" | "live",
-    redirectUrl: process.env.SHOPEE_REDIRECT_URL ?? "",
-  },
   supabase: {
     url: process.env.SUPABASE_URL ?? "",
     serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY ?? "",
@@ -27,12 +17,12 @@ export const config = {
   },
 };
 
-/** Throws if any required env var is missing. Call at the top of API routes. */
-export function assertConfig() {
-  required("SHOPEE_PARTNER_ID", String(config.shopee.partnerId));
-  required("SHOPEE_PARTNER_KEY", config.shopee.partnerKey);
-  required("SHOPEE_REDIRECT_URL", config.shopee.redirectUrl);
-  required("SUPABASE_URL", config.supabase.url);
-  required("SUPABASE_SERVICE_ROLE_KEY", config.supabase.serviceRoleKey);
-  required("TOKEN_ENCRYPTION_KEY", config.tokenEncryptionKey);
+/** Throws if the database or token encryption isn't configured. */
+export function assertCoreConfig() {
+  const missing = [
+    ["SUPABASE_URL", config.supabase.url],
+    ["SUPABASE_SERVICE_ROLE_KEY", config.supabase.serviceRoleKey],
+    ["TOKEN_ENCRYPTION_KEY", config.tokenEncryptionKey],
+  ].filter(([, v]) => !v).map(([k]) => k);
+  if (missing.length) throw new Error(`Missing env: ${missing.join(", ")}`);
 }

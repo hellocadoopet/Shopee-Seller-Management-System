@@ -3,13 +3,13 @@ import { useFetch, type ShopList } from "../lib/useFetch";
 import { ShopBadge, ShopErrors, useMultiShop } from "../components/Shop";
 
 interface Voucher {
-  voucher_id: number;
-  voucher_code: string;
-  voucher_name: string;
-  percentage?: number;
-  discount_amount?: number;
-  start_time: number;
-  end_time: number;
+  id: string;
+  code: string;
+  name: string;
+  percentage: number | null;
+  amount: number | null;
+  starts_at: number; // epoch ms
+  ends_at: number;
 }
 
 export default function VouchersPage() {
@@ -27,14 +27,14 @@ export default function VouchersPage() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {vouchers.map((v) => (
-          <div key={`${v.shop_id}:${v.voucher_id}`} className="bg-white rounded-xl border border-gray-200 p-5">
+          <div key={`${v.shop_id}:${v.id}`} className="bg-white rounded-xl border border-gray-200 p-5">
             <div className="flex justify-between text-xs text-gray-500">
-              <span>{v.voucher_code}</span>
+              <span>{v.code}</span>
               {multi && <ShopBadge shopId={v.shop_id} name={v.shop_name} />}
             </div>
-            <div className="text-lg font-medium mt-1">{v.voucher_name}</div>
+            <div className="text-lg font-medium mt-1">{v.name}</div>
             <div className="text-2xl font-bold text-shopee mt-2">
-              {v.percentage ? `${v.percentage}% off` : `RM ${v.discount_amount} off`}
+              {v.percentage ? `${v.percentage}% off` : `RM ${v.amount ?? 0} off`}
             </div>
           </div>
         ))}

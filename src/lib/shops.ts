@@ -3,7 +3,8 @@ import { useSearchParams } from "react-router";
 
 export interface Shop {
   id: string;
-  shopee_shop_id: number;
+  platform: string; // "shopee", "whatsapp", …
+  external_id: string;
   shop_name: string;
 }
 

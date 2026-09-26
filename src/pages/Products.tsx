@@ -4,18 +4,18 @@ import { useFetch, type ShopList, type Tagged } from "../lib/useFetch";
 import { ShopBadge, ShopErrors, useMultiShop } from "../components/Shop";
 
 interface Item {
-  item_id: number;
-  item_name: string;
-  item_sku: string;
-  item_status: string;
-  has_model: boolean;
+  id: string;
+  name: string;
+  sku: string;
+  status: string;
+  has_variants: boolean;
   price: number | null;
   stock: number | null;
 }
 type Row = Tagged<Item>;
 
 const LOW_STOCK = 5; // matches the Overview default (LOW_STOCK_THRESHOLD)
-const key = (it: Row) => `${it.shop_id}:${it.item_id}`;
+const key = (it: Row) => `${it.shop_id}:${it.id}`;
 
 export default function ProductsPage() {
   const [shop] = useShopParam();
@@ -31,7 +31,7 @@ export default function ProductsPage() {
 
   const items = (data?.items ?? [])
     .map((it) => (saved[key(it)] != null ? { ...it, price: saved[key(it)]! } : it))
-    .filter((it) => !query || `${it.item_name} ${it.item_sku}`.toLowerCase().includes(query.toLowerCase()))
+    .filter((it) => !query || `${it.name} ${it.sku}`.toLowerCase().includes(query.toLowerCase()))
     .filter((it) => !lowOnly || (it.stock != null && it.stock <= LOW_STOCK));
 
   async function savePrice(it: Row) {
@@ -46,7 +46,7 @@ export default function ProductsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // shop_id comes from the row, not the filter — the edit always hits this item's own shop
-        body: JSON.stringify({ shop_id: it.shop_id, item_id: it.item_id, price_list: [{ original_price: newPrice }] }),
+        body: JSON.stringify({ shop_id: it.shop_id, product_id: it.id, price: newPrice }),
       });
       if (!r.ok) throw new Error(await r.text());
       setSaved((s) => ({ ...s, [key(it)]: newPrice }));
@@ -81,7 +81,7 @@ export default function ProductsPage() {
       </div>
 
       <ShopErrors errors={data?.errors} />
-      {loading && <p className="text-gray-500">Loading from Shopee…</p>}
+      {loading && <p className="text-gray-500">Loading…</p>}
       {error && <p className="text-red-600 text-sm mb-4">Error: {error}</p>}
 
       {data && (
@@ -106,8 +106,8 @@ export default function ProductsPage() {
                       <ShopBadge shopId={it.shop_id} name={it.shop_name} />
                     </td>
                   )}
-                  <td className="px-4 py-3 font-medium">{it.item_name}</td>
-                  <td className="px-4 py-3 text-gray-500">{it.item_sku || "—"}</td>
+                  <td className="px-4 py-3 font-medium">{it.name}</td>
+                  <td className="px-4 py-3 text-gray-500">{it.sku || "—"}</td>
                   <td className="px-4 py-3 text-right">
                     {editing === key(it) ? (
                       <input
@@ -119,8 +119,8 @@ export default function ProductsPage() {
                       />
                     ) : it.price != null ? (
                       it.price.toFixed(2)
-                    ) : it.has_model ? (
-                      <span className="text-gray-400" title="Has variants — edit in Seller Center for now">
+                    ) : it.has_variants ? (
+                      <span className="text-gray-400" title="Has variants — edit on the platform for now">
                         variants
                       </span>
                     ) : (
@@ -135,7 +135,7 @@ export default function ProductsPage() {
                     {it.stock ?? "—"}
                   </td>
                   <td className="px-4 py-3">
-                    <span className="px-2 py-0.5 rounded-full bg-green-100 text-green-700 text-xs">{it.item_status}</span>
+                    <span className="px-2 py-0.5 rounded-full bg-green-100 text-green-700 text-xs">{it.status}</span>
                   </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
                     {editing === key(it) ? (
@@ -152,7 +152,7 @@ export default function ProductsPage() {
                         </button>
                       </>
                     ) : (
-                      !it.has_model && (
+                      !it.has_variants && (
                         <button
                           onClick={() => {
                             setEditing(key(it));

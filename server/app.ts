@@ -1,40 +1,33 @@
 import crypto from "node:crypto";
-import { Hono } from "hono";
-import { getCookie, setCookie, deleteCookie } from "hono/cookie";
-import { config, assertConfig } from "../lib/config";
-import { computeAuthToken, isLockEnabled } from "../lib/appAuth";
-import { listShops, merge, perShop, resolveShops, type Shop } from "../lib/shops";
-import { supabase } from "../lib/supabase";
-import { getFreshAccessToken, saveTokens } from "../lib/tokens";
-import {
-  buildAuthUrl,
-  exchangeCodeForToken,
-  getShopInfo,
-  getAdsPerformance,
-  getVoucherList,
-  updateItemPrice,
-} from "../lib/shopee";
-import { fetchOrders } from "../lib/orders";
-import { listProducts } from "../lib/products";
-import { listConversations, listMessages, send } from "../lib/chat";
-import { computeBasket, orderSizeBucket } from "../lib/analytics";
-import { matchRule, rules, suggestReply } from "../lib/chatbot";
-import { generateReply, getLlmConfig, KEY_ENV } from "../lib/llm";
+import { Hono, type Context } from "hono";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { describePlatforms, getAdapter, getCapability, isPlatform } from "../adapters/factory.js";
+import type { Conversation, Order } from "../adapters/types.js";
+import { computeAuthToken, isLockEnabled } from "../lib/appAuth.js";
+import { computeBasket, orderSizeBucket } from "../lib/analytics.js";
+import { matchRule, rules, suggestReply } from "../lib/chatbot.js";
+import { assertCoreConfig } from "../lib/config.js";
+import { generateReply, getLlmConfig, KEY_ENV } from "../lib/llm.js";
+import { findShop, listShops, merge, perShop, resolveShops } from "../lib/shops.js";
+import { supabase } from "../lib/supabase.js";
+import { getCredentials, saveTokens } from "../lib/tokens.js";
 
 export const app = new Hono().basePath("/api");
 
-// Any uncaught error (Shopee, Supabase, missing env) → JSON 500 the pages can show.
+// Any uncaught error (platform API, Supabase, missing env) → JSON 500 the pages can show.
 app.onError((e, c) => c.json({ error: String(e) }, 500));
 
 // ─────────────────────────────────────────────────────────────
 // Password gate. Reachable without login:
-//  - login/logout      → the gate itself
-//  - shopee callback/webhook → Shopee's servers/redirects must reach these
+//  - login/logout             → the gate itself
+//  - <platform>/callback|webhook → the platforms' redirects and servers must reach these
 // ─────────────────────────────────────────────────────────────
-const PUBLIC = ["/api/login", "/api/logout", "/api/shopee/callback", "/api/shopee/webhook"];
+const PUBLIC = ["/api/login", "/api/logout"];
+const PLATFORM_PUBLIC = /^\/api\/([a-z]+)\/(callback|webhook)$/;
 
 app.use(async (c, next) => {
-  if (!isLockEnabled() || PUBLIC.includes(c.req.path)) return next();
+  const platformHook = PLATFORM_PUBLIC.exec(c.req.path);
+  if (!isLockEnabled() || PUBLIC.includes(c.req.path) || (platformHook && isPlatform(platformHook[1]!))) return next();
   if (getCookie(c, "app_auth") === (await computeAuthToken())) return next();
   return c.json({ error: "unauthorized" }, 401);
 });
@@ -63,174 +56,159 @@ app.post("/logout", (c) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// Shopee OAuth + webhook
+// Platforms: connect (OAuth) + webhooks, one set of routes for every platform.
+// Shopee's registered redirect stays /api/shopee/callback.
 // ─────────────────────────────────────────────────────────────
 
+app.get("/platforms", (c) => c.json({ platforms: describePlatforms() }));
+
+const stateCookie = (platform: string) => `oauth_state_${platform}`;
+
+/** The platform's connect capability, checked to be usable; a Response means "stop, return this". */
+function connectFor(c: Context, platform: string) {
+  if (!isPlatform(platform)) return c.json({ error: `Unknown platform: ${platform}` }, 404);
+  const adapter = getAdapter(platform);
+  if (!adapter.connect) return c.json({ error: `${adapter.label} can't be connected from here yet` }, 400);
+  const missing = adapter.missingConfig();
+  if (missing.length) throw new Error(`Missing env: ${missing.join(", ")}`);
+  assertCoreConfig();
+  return adapter.connect;
+}
+
 /**
- * Start the OAuth flow. Random `state` goes in a short-lived httpOnly cookie and
- * in the redirect URL; the callback checks they match (CSRF guard).
+ * Start the OAuth flow. Random `state` goes in a short-lived httpOnly cookie and in the
+ * redirect URL; the callback checks they match (CSRF guard).
  */
-app.get("/shopee/authorize", (c) => {
-  assertConfig();
+app.get("/:platform/authorize", (c) => {
+  const platform = c.req.param("platform");
+  const connect = connectFor(c, platform);
+  if (connect instanceof Response) return connect;
+
   const state = crypto.randomBytes(16).toString("hex");
-
-  const url = new URL(buildAuthUrl());
-  const redirect = new URL(url.searchParams.get("redirect") ?? "");
-  redirect.searchParams.set("state", state);
-  url.searchParams.set("redirect", redirect.toString());
-
-  setCookie(c, "shopee_oauth_state", state, { httpOnly: true, sameSite: "Lax", maxAge: 600, path: "/" });
-  return c.redirect(url.toString());
+  setCookie(c, stateCookie(platform), state, { httpOnly: true, sameSite: "Lax", maxAge: 600, path: "/" });
+  return c.redirect(connect.authorizeUrl(state));
 });
 
-/** Shopee redirects here after the seller authorizes. Query: code, shop_id, state. */
-app.get("/shopee/callback", async (c) => {
-  assertConfig();
+/** The platform redirects here after the seller authorizes. */
+app.get("/:platform/callback", async (c) => {
+  const platform = c.req.param("platform");
   const fail = (msg: string) => c.redirect(`/connect?error=${encodeURIComponent(msg)}`);
+  let connect;
+  try {
+    connect = connectFor(c, platform);
+  } catch (e) {
+    return fail(String(e));
+  }
+  if (connect instanceof Response) return connect;
 
-  const { code, shop_id, state } = c.req.query();
-  if (!code || !shop_id || !state) return fail("Missing code, shop_id, or state from Shopee redirect.");
-  const shopeeShopId = Number(shop_id);
-
-  const cookieState = getCookie(c, "shopee_oauth_state");
-  if (!cookieState || cookieState !== state) {
+  const query = c.req.query();
+  const cookieState = getCookie(c, stateCookie(platform));
+  if (!query.state || !cookieState || cookieState !== query.state) {
     return fail("Invalid or expired state token. Please click Connect again.");
   }
 
   try {
-    const tokens = await exchangeCodeForToken(code, shopeeShopId);
-
-    let shopName: string | null = null;
-    try {
-      shopName = (await getShopInfo(tokens.access_token, shopeeShopId)).shop_name;
-    } catch {
-      // Non-fatal — we can fill in later
-    }
-
+    const { externalId, name, tokens } = await connect.completeAuthorization(query);
     const { data: shop, error } = await supabase
       .from("shops")
       .upsert(
-        { shopee_shop_id: shopeeShopId, shop_name: shopName, connected_at: new Date().toISOString(), disconnected_at: null },
-        { onConflict: "shopee_shop_id" },
+        { platform, external_id: externalId, shop_name: name, connected_at: new Date().toISOString(), disconnected_at: null },
+        { onConflict: "platform,external_id" },
       )
       .select("id")
       .single();
     if (error || !shop) return fail(`DB error: ${error?.message ?? "no shop returned"}`);
 
-    await saveTokens(shop.id, tokens.access_token, tokens.refresh_token, tokens.expire_in);
-
-    deleteCookie(c, "shopee_oauth_state", { path: "/" });
+    await saveTokens(shop.id, tokens);
+    deleteCookie(c, stateCookie(platform), { path: "/" });
     return c.redirect(`/dashboard?shop=${shop.id}`);
   } catch (e) {
-    return fail(`Shopee error: ${String(e)}`);
+    return fail(`${getAdapter(platform).label} error: ${String(e)}`);
   }
 });
 
-/**
- * Shopee push notifications — verify the HMAC signature before trusting.
- * Common codes: 1=shop_authorization, 3=order_status, 10=new_message, 12=item_promotion
- */
-app.post("/shopee/webhook", async (c) => {
-  const sig = c.req.header("authorization");
-  const rawBody = await c.req.text();
-  if (!sig) return c.json({ error: "no signature" }, 401);
+/** Webhook subscription check (WhatsApp/Meta does a GET handshake; Shopee doesn't). */
+app.get("/:platform/webhook", (c) => {
+  const platform = c.req.param("platform");
+  const hook = isPlatform(platform) ? getCapability(platform, "webhook") : null;
+  const answer = hook?.challenge?.(c.req.query());
+  return answer == null ? c.json({ error: "forbidden" }, 403) : c.text(answer);
+});
 
-  // ponytail: signs c.req.url as received; if Shopee's registered URL differs (proxy/https rewrite), rebuild it from x-forwarded-* headers.
-  const expected = crypto.createHmac("sha256", config.shopee.partnerKey.trim()).update(`${c.req.url}|${rawBody}`).digest("hex");
-  const sigBuf = Buffer.from(sig, "hex");
-  const expBuf = Buffer.from(expected, "hex");
-  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+app.post("/:platform/webhook", async (c) => {
+  const platform = c.req.param("platform");
+  const hook = isPlatform(platform) ? getCapability(platform, "webhook") : null;
+  if (!hook) return c.json({ error: "no webhook for this platform" }, 404);
+
+  const body = await c.req.text();
+  if (!hook.verify({ url: c.req.url, body, header: (name) => c.req.header(name) })) {
     return c.json({ error: "bad signature" }, 401);
   }
-
-  const body = JSON.parse(rawBody) as { code: number; shop_id?: number };
-  // TODO route by code: 3 → schedule order sync, 10 → trigger auto-reply rule
-  console.log("Shopee webhook:", { code: body.code, shop_id: body.shop_id });
+  await hook.handle(body);
   return c.json({ ok: true });
 });
 
 // ─────────────────────────────────────────────────────────────
 // Shop data. Reads take `?shop=all` (default) or `?shop=<uuid>` and fan out per shop in
-// parallel; list responses are `{ items, errors }` with every row tagged shop_id/shop_name.
+// parallel, skipping shops whose platform lacks the feature; list responses are
+// `{ items, errors }` with every row tagged shop_id/shop_name.
 // Writes take `shop_id` explicitly — never an implicit "current shop" — so an edit always
 // lands on the shop of the row it was made from.
 // ─────────────────────────────────────────────────────────────
 
 app.get("/shops", async (c) => c.json({ shops: await listShops() }));
 
-const daysAgo = (days: number) => Math.floor(Date.now() / 1000) - days * 86400;
-const shopsOf = (c: { req: { query: (k: string) => string | undefined } }) => resolveShops(c.req.query("shop"));
-
-/** Resolve the single shop a write targets; null → caller returns 400. */
-async function writeTarget(shopId: string | undefined): Promise<Shop | null> {
-  if (!shopId) return null;
-  return (await listShops()).find((s) => s.id === shopId) ?? null;
-}
+const daysAgo = (days: number) => new Date(Date.now() - days * 86400_000);
+const shopsOf = (c: Context) => resolveShops(c.req.query("shop"));
 
 app.get("/products", async (c) => {
-  return c.json(merge(await perShop(await shopsOf(c), (_, auth) => listProducts(auth))));
+  return c.json(merge(await perShop(await shopsOf(c), "catalog", (catalog, creds) => catalog.list(creds))));
 });
 
 app.post("/products", async (c) => {
-  const body = await c.req.json<{
-    shop_id?: string;
-    item_id: number;
-    price_list: Array<{ model_id?: number; original_price: number }>;
-  }>();
-  const shop = await writeTarget(body.shop_id);
-  if (!shop) return c.json({ error: "shop_id required (the shop this item belongs to)" }, 400);
-  const auth = await getFreshAccessToken(shop.id);
-  return c.json(await updateItemPrice(auth.accessToken, auth.shopeeShopId, body.item_id, body.price_list));
+  const body = await c.req.json<{ shop_id?: string; product_id?: string; price?: number }>();
+  const shop = await findShop(body.shop_id);
+  if (!shop) return c.json({ error: "shop_id required (the shop this product belongs to)" }, 400);
+  if (!body.product_id || !(Number(body.price) > 0)) return c.json({ error: "product_id and a price > 0 required" }, 400);
+  const catalog = getCapability(shop.platform, "catalog");
+  if (!catalog) return c.json({ error: `${shop.platform} has no products` }, 400);
+  await catalog.updatePrice(await getCredentials(shop), body.product_id, Number(body.price));
+  return c.json({ ok: true });
 });
 
 app.get("/orders", async (c) => {
   const since = daysAgo(Number(c.req.query("days") ?? 7));
-  const res = merge(await perShop(await shopsOf(c), (shop) => fetchOrders(shop.id, since)));
-  res.items.sort((a, b) => b.create_time - a.create_time); // newest first across shops
+  const res = merge(await perShop(await shopsOf(c), "orders", (orders, creds) => orders.list(creds, since)));
+  res.items.sort((a, b) => b.created_at - a.created_at); // newest first across shops
   return c.json(res);
 });
 
 app.get("/vouchers", async (c) => {
-  return c.json(
-    merge(
-      await perShop(await shopsOf(c), async (_, auth) => {
-        const res = await getVoucherList(auth.accessToken, auth.shopeeShopId, "all");
-        return res.voucher_list ?? []; // Shopee sends null when there are none
-      }),
-    ),
-  );
+  return c.json(merge(await perShop(await shopsOf(c), "promotions", (p, creds) => p.listVouchers(creds))));
 });
 
 app.get("/ads", async (c) => {
   const start = c.req.query("start_date") ?? new Date(Date.now() - 30 * 86400_000).toISOString().slice(0, 10);
   const end = c.req.query("end_date") ?? new Date().toISOString().slice(0, 10);
-  return c.json(
-    merge(
-      await perShop(await shopsOf(c), async (_, auth) => {
-        const res = await getAdsPerformance(auth.accessToken, auth.shopeeShopId, start, end);
-        return res.report_list ?? [];
-      }),
-    ),
-  );
+  return c.json(merge(await perShop(await shopsOf(c), "ads", (ads, creds) => ads.report(creds, { start, end }))));
 });
 
-// Live from Shopee, so the window is capped: 30 days ≈ 2 order-list windows + 1 detail call per 50 orders, per shop.
+// Orders are read live, so the window is capped: on Shopee 30 days ≈ 2 order-list windows + 1 detail call per 50 orders, per shop.
 const MAX_INSIGHT_DAYS = 30;
-// Orders that count as sales: skip ones not paid yet or being cancelled.
-const NOT_SALES = new Set(["UNPAID", "IN_CANCEL", "CANCELLED"]);
 const round2 = (x: number) => Math.round(x * 100) / 100;
+const sales = (orders: Order[]) => orders.filter((o) => o.counts_as_sale);
 
 /**
  * Sales by product, basket pairs, order-size distribution + a per-shop comparison.
- * Item IDs are per shop, so product rows and basket pairs stay tagged with their shop.
+ * Product ids are per shop, so product rows and basket pairs stay tagged with their shop.
  */
 app.get("/insights", async (c) => {
   const days = Math.min(Number(c.req.query("days") ?? MAX_INSIGHT_DAYS), MAX_INSIGHT_DAYS);
   const since = daysAgo(days);
-  const results = await perShop(await shopsOf(c), (shop) => fetchOrders(shop.id, since));
+  const results = await perShop(await shopsOf(c), "orders", (orders, creds) => orders.list(creds, since));
   const tag = (r: (typeof results)[number]) => ({ shop_id: r.shop_id, shop_name: r.shop_name });
 
-  const sales: Array<{ shop_id: string; shop_name: string; item_id: number; item_name: string; qty: number; revenue: number }> = [];
+  const byProductRows: Array<{ shop_id: string; shop_name: string; product_id: string; name: string; qty: number; revenue: number }> = [];
   const basket: Array<ReturnType<typeof computeBasket>[number] & { shop_id: string; shop_name: string }> = [];
   const byShop: Array<{ shop_id: string; shop_name: string; orders: number; revenue: number }> = [];
   const buckets = new Map<string, { orders: number; revenue: number }>();
@@ -241,48 +219,48 @@ app.get("/insights", async (c) => {
       errors.push({ ...tag(r), error: r.error });
       continue;
     }
-    const orders = r.data.filter((o) => !NOT_SALES.has(o.order_status));
+    const orders = sales(r.data);
 
-    const byProduct = new Map<number, { item_name: string; qty: number; revenue: number }>();
-    for (const it of orders.flatMap((o) => o.item_list ?? [])) {
-      const e = byProduct.get(it.item_id) ?? { item_name: it.item_name ?? `#${it.item_id}`, qty: 0, revenue: 0 };
-      e.qty += it.model_quantity_purchased;
-      e.revenue += Number(it.model_discounted_price) * it.model_quantity_purchased;
-      byProduct.set(it.item_id, e);
+    const byProduct = new Map<string, { name: string; qty: number; revenue: number }>();
+    for (const line of orders.flatMap((o) => o.lines)) {
+      const e = byProduct.get(line.product_id) ?? { name: line.name, qty: 0, revenue: 0 };
+      e.qty += line.qty;
+      e.revenue += line.unit_price * line.qty;
+      byProduct.set(line.product_id, e);
     }
-    for (const [item_id, v] of byProduct) sales.push({ ...tag(r), item_id, ...v, revenue: round2(v.revenue) });
+    for (const [product_id, v] of byProduct) byProductRows.push({ ...tag(r), product_id, ...v, revenue: round2(v.revenue) });
 
     for (const o of orders) {
-      const b = orderSizeBucket(Number(o.total_amount));
+      const b = orderSizeBucket(o.total);
       const e = buckets.get(b) ?? { orders: 0, revenue: 0 };
       e.orders++;
-      e.revenue += Number(o.total_amount);
+      e.revenue += o.total;
       buckets.set(b, e);
     }
 
     basket.push(...computeBasket(orders).map((p) => ({ ...p, ...tag(r) })));
-    byShop.push({ ...tag(r), orders: orders.length, revenue: round2(orders.reduce((s, o) => s + Number(o.total_amount), 0)) });
+    byShop.push({ ...tag(r), orders: orders.length, revenue: round2(orders.reduce((s, o) => s + o.total, 0)) });
   }
 
-  sales.sort((a, b) => b.revenue - a.revenue);
+  byProductRows.sort((a, b) => b.revenue - a.revenue);
   basket.sort((a, b) => b.lift - a.lift);
   const sizes = [...buckets.entries()].map(([bucket, v]) => ({ bucket, ...v, revenue: round2(v.revenue) }));
-  return c.json({ days, by_shop: byShop, sales, sizes, basket: basket.slice(0, 50), errors });
+  return c.json({ days, by_shop: byShop, sales: byProductRows, sizes, basket: basket.slice(0, 50), errors });
 });
 
 // ─────────────────────────────────────────────────────────────
 // Overview
 // ─────────────────────────────────────────────────────────────
 
-// Shops are Shopee MY → "today" is Malaysia time (UTC+8, no DST).
-const MY_UTC_OFFSET = 8 * 3600;
+// Shops are in Malaysia → "today" is Malaysia time (UTC+8, no DST).
+const MY_UTC_OFFSET_MS = 8 * 3600_000;
 // "Low stock" = at or below this many units. Env-tunable per shop owner's taste.
 const LOW_STOCK_THRESHOLD = Number(process.env.LOW_STOCK_THRESHOLD ?? 5);
 // ponytail: 10 pages × 60 = 600 unread conversations max per shop; add a "600+" flag if a shop ever gets there.
 const MAX_CHAT_PAGES = 10;
 
 type Section<T> = { ok: true; data: T } | { ok: false; error: string };
-/** One Shopee failure shouldn't blank the whole page — each card reports its own error. */
+/** One platform failure shouldn't blank the whole page — each card reports its own error. */
 const section = async <T>(fn: () => Promise<T>): Promise<Section<T>> => {
   try {
     return { ok: true, data: await fn() };
@@ -291,44 +269,49 @@ const section = async <T>(fn: () => Promise<T>): Promise<Section<T>> => {
   }
 };
 
-/** Per shop: today's sales, unread chats, products/low stock — each section fails independently. */
+/**
+ * Per shop: today's sales, unread chats, products/low stock — each section fails independently,
+ * and is null when the shop's platform doesn't have that feature.
+ */
 app.get("/overview", async (c) => {
-  const now = Math.floor(Date.now() / 1000);
-  const todayStart = Math.floor((now + MY_UTC_OFFSET) / 86400) * 86400 - MY_UTC_OFFSET;
+  const now = Date.now();
+  const todayStart = new Date(Math.floor((now + MY_UTC_OFFSET_MS) / 86400_000) * 86400_000 - MY_UTC_OFFSET_MS);
 
   const shops = await Promise.all(
     (await shopsOf(c)).map(async (shop) => {
       const tag = { shop_id: shop.id, shop_name: shop.shop_name };
-      const auth = await section(() => getFreshAccessToken(shop.id));
-      if (!auth.ok) return { ...tag, today: auth, chats: auth, products: auth };
+      const adapter = getAdapter(shop.platform);
+      const creds = await section(() => getCredentials(shop));
+      const run = <C, T>(cap: C | undefined, fn: (impl: C, creds: Awaited<ReturnType<typeof getCredentials>>) => Promise<T>) =>
+        !cap ? null : !creds.ok ? creds : section(() => fn(cap, creds.data));
 
       const [today, chats, products] = await Promise.all([
-        section(async () => {
-          const sales = (await fetchOrders(shop.id, todayStart)).filter((o) => !NOT_SALES.has(o.order_status));
-          const revenue = sales.reduce((sum, o) => sum + Number(o.total_amount), 0);
-          return { orders: sales.length, revenue: round2(revenue), currency: sales[0]?.currency ?? "MYR" };
+        run(adapter.orders, async (orders, cr) => {
+          const paid = sales(await orders.list(cr, todayStart));
+          const revenue = paid.reduce((sum, o) => sum + o.total, 0);
+          return { orders: paid.length, revenue: round2(revenue), currency: paid[0]?.currency ?? "MYR" };
         }),
-        section(async () => {
-          let conversations = 0, messages = 0, cursor = "";
+        run(adapter.chat, async (chat, cr) => {
+          let conversations = 0, messages = 0, cursor: string | undefined;
           for (let page = 0; page < MAX_CHAT_PAGES; page++) {
-            const r = await listConversations(auth.data, "unread", cursor);
+            const r = await chat.listConversations(cr, { unreadOnly: true, cursor });
             conversations += r.conversations.length;
-            messages += r.conversations.reduce((sum, cv) => sum + (cv.unread_count ?? 0), 0);
-            if (!r.more) break;
+            messages += r.conversations.reduce((sum, cv) => sum + cv.unread, 0);
+            if (!r.next) break;
             cursor = r.next;
           }
           return { conversations, messages };
         }),
-        section(async () => {
-          const items = await listProducts(auth.data);
+        run(adapter.catalog, async (catalog, cr) => {
+          const items = await catalog.list(cr);
           const lowStock = items
             .filter((it) => it.stock != null && it.stock <= LOW_STOCK_THRESHOLD)
             .sort((a, b) => (a.stock ?? 0) - (b.stock ?? 0))
-            .map(({ item_id, item_name, stock }) => ({ item_id, item_name, stock }));
+            .map(({ id, name, stock }) => ({ id, name, stock }));
           return { total: items.length, low_stock: lowStock };
         }),
       ]);
-      return { ...tag, today, chats, products };
+      return { ...tag, platform: shop.platform, today, chats, products };
     }),
   );
 
@@ -336,36 +319,41 @@ app.get("/overview", async (c) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// Chat — one inbox across shops; reading a thread / sending always names its shop.
+// Chat — one inbox across shops and platforms; reading a thread / sending always names its shop.
 // ─────────────────────────────────────────────────────────────
 
-/** Latest conversations per shop (first page, up to 60 each), merged newest first. type=all|unread. */
+/** Latest conversations per shop (first page each), merged newest first. type=all|unread. */
 app.get("/chat/conversations", async (c) => {
-  const type = c.req.query("type") === "unread" ? "unread" : "all";
-  const res = merge(
-    await perShop(await shopsOf(c), async (_, auth) => {
-      return (await listConversations(auth, type)).conversations;
-    }),
+  const unreadOnly = c.req.query("type") === "unread";
+  const res = merge<Conversation>(
+    await perShop(await shopsOf(c), "chat", async (chat, creds) => (await chat.listConversations(creds, { unreadOnly })).conversations),
   );
-  res.items.sort((a, b) => (b.last_message_timestamp ?? 0) - (a.last_message_timestamp ?? 0));
+  res.items.sort((a, b) => (b.last_at ?? 0) - (a.last_at ?? 0));
   return c.json(res);
 });
 
 app.get("/chat/messages", async (c) => {
-  const shop = await writeTarget(c.req.query("shop_id"));
+  const shop = await findShop(c.req.query("shop_id"));
   const conversationId = c.req.query("conversation_id");
   if (!shop || !conversationId) return c.json({ error: "shop_id and conversation_id required" }, 400);
-  const auth = await getFreshAccessToken(shop.id);
-  return c.json({ shopee_shop_id: auth.shopeeShopId, messages: await listMessages(auth, conversationId) });
+  const chat = getCapability(shop.platform, "chat");
+  if (!chat) return c.json({ error: `${shop.platform} has no chat` }, 400);
+  return c.json({ messages: await chat.listMessages(await getCredentials(shop), conversationId) });
 });
 
 app.post("/chat/send", async (c) => {
-  const { shop_id, to_id, text } = await c.req.json<{ shop_id?: string; to_id: number; text: string }>();
-  const shop = await writeTarget(shop_id);
+  const { shop_id, conversation_id, peer_id, text } = await c.req.json<{
+    shop_id?: string;
+    conversation_id?: string;
+    peer_id?: string;
+    text?: string;
+  }>();
+  const shop = await findShop(shop_id);
   if (!shop) return c.json({ error: "shop_id required (the shop this conversation belongs to)" }, 400);
-  if (!to_id || !text?.trim()) return c.json({ error: "to_id and text required" }, 400);
-  const auth = await getFreshAccessToken(shop.id);
-  await send(auth, to_id, text.trim());
+  if (!conversation_id || !peer_id || !text?.trim()) return c.json({ error: "conversation_id, peer_id and text required" }, 400);
+  const chat = getCapability(shop.platform, "chat");
+  if (!chat) return c.json({ error: `${shop.platform} has no chat` }, 400);
+  await chat.send(await getCredentials(shop), { conversationId: conversation_id, peerId: peer_id }, text.trim());
   return c.json({ ok: true });
 });
 

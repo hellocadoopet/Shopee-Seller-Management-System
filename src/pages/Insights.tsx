@@ -2,9 +2,9 @@ import { useShopParam } from "../lib/shops";
 import { useFetch, type ShopError, type Tagged } from "../lib/useFetch";
 import { ShopBadge, ShopErrors, useMultiShop } from "../components/Shop";
 
-type SalesRow = Tagged<{ item_id: number; item_name: string; qty: number; revenue: number }>;
+type SalesRow = Tagged<{ product_id: string; name: string; qty: number; revenue: number }>;
 interface SizeBucket { bucket: string; orders: number; revenue: number }
-type BasketPair = Tagged<{ item_a: number; item_b: number; co_orders: number; confidence: number; lift: number }>;
+type BasketPair = Tagged<{ product_a: string; product_b: string; co_orders: number; confidence: number; lift: number }>;
 type ShopTotal = Tagged<{ orders: number; revenue: number }>;
 
 export default function InsightsPage() {
@@ -54,9 +54,9 @@ export default function InsightsPage() {
             </thead>
             <tbody>
               {sales.slice(0, 20).map((r) => (
-                <tr key={`${r.shop_id}:${r.item_id}`} className="border-t">
+                <tr key={`${r.shop_id}:${r.product_id}`} className="border-t">
                   {multi && <td className="py-2"><ShopBadge shopId={r.shop_id} name={r.shop_name} /></td>}
-                  <td className="py-2">{r.item_name}</td>
+                  <td className="py-2">{r.name}</td>
                   <td className="text-right">{r.qty}</td>
                   <td className="text-right">RM {r.revenue.toLocaleString()}</td>
                 </tr>
@@ -83,9 +83,9 @@ export default function InsightsPage() {
             </thead>
             <tbody>
               {basket.map((p) => (
-                <tr key={`${p.shop_id}:${p.item_a}-${p.item_b}`} className="border-t">
+                <tr key={`${p.shop_id}:${p.product_a}-${p.product_b}`} className="border-t">
                   {multi && <td className="py-2"><ShopBadge shopId={p.shop_id} name={p.shop_name} /></td>}
-                  <td className="py-2 font-mono text-xs">#{p.item_a} + #{p.item_b}</td>
+                  <td className="py-2 font-mono text-xs">#{p.product_a} + #{p.product_b}</td>
                   <td className="text-right">{p.co_orders}</td>
                   <td className="text-right">{(p.confidence * 100).toFixed(0)}%</td>
                   <td className="text-right font-semibold">{p.lift.toFixed(2)}</td>

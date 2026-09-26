@@ -3,12 +3,12 @@ import { useFetch, type ShopList } from "../lib/useFetch";
 import { ShopBadge, ShopErrors, useMultiShop } from "../components/Shop";
 
 interface Order {
-  order_sn: string;
-  order_status: string;
-  total_amount: number;
+  id: string;
+  status: string;
+  total: number;
   currency: string;
-  buyer_username: string;
-  create_time: number;
+  buyer_name: string | null;
+  created_at: number; // epoch ms
 }
 
 export default function OrdersPage() {
@@ -21,7 +21,7 @@ export default function OrdersPage() {
     <div>
       <h1 className="text-2xl font-semibold mb-6">Orders — last 14 days</h1>
       <ShopErrors errors={data?.errors} />
-      {loading && <p className="text-gray-500">Loading from Shopee…</p>}
+      {loading && <p className="text-gray-500">Loading…</p>}
       {error && <p className="text-red-600 text-sm mb-4">Error: {error}</p>}
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -38,18 +38,18 @@ export default function OrdersPage() {
           </thead>
           <tbody>
             {orders.map((o) => (
-              <tr key={`${o.shop_id}:${o.order_sn}`} className="border-t border-gray-100">
+              <tr key={`${o.shop_id}:${o.id}`} className="border-t border-gray-100">
                 {multi && (
                   <td className="px-4 py-3">
                     <ShopBadge shopId={o.shop_id} name={o.shop_name} />
                   </td>
                 )}
-                <td className="px-4 py-3 font-mono text-xs">{o.order_sn}</td>
-                <td className="px-4 py-3 text-gray-500">{new Date(o.create_time * 1000).toLocaleString()}</td>
-                <td className="px-4 py-3">{o.buyer_username}</td>
-                <td className="px-4 py-3">{o.order_status}</td>
+                <td className="px-4 py-3 font-mono text-xs">{o.id}</td>
+                <td className="px-4 py-3 text-gray-500">{new Date(o.created_at).toLocaleString()}</td>
+                <td className="px-4 py-3">{o.buyer_name ?? "—"}</td>
+                <td className="px-4 py-3">{o.status}</td>
                 <td className="px-4 py-3 text-right">
-                  {o.currency} {Number(o.total_amount).toFixed(2)}
+                  {o.currency} {o.total.toFixed(2)}
                 </td>
               </tr>
             ))}

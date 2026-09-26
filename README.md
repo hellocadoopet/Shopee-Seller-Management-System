@@ -42,9 +42,9 @@ Single owner, multiple shops. Not a multi-tenant SaaS.
 |---|---|
 | Pages | React 19 + Vite (single-page app, react-router) |
 | API | Hono — runs as one Vercel function in prod, a Node server in dev |
-| Database | Supabase (Postgres) — only connected shops + their Shopee tokens |
+| Database | Supabase (Postgres) — only connected shops + their tokens |
 | Hosting | Vercel (frontend + API together) |
-| External API | Shopee Open Platform v2 |
+| Platforms | Shopee Open Platform v2 (full); WhatsApp Cloud API (scaffold) — one adapter each |
 | AI | Claude / OpenAI / DeepSeek (pick one) |
 
 No message queue, no Redis, no separate worker service. Simple on purpose.
@@ -143,12 +143,40 @@ Every `git push` auto-deploys.
 ## Project layout
 
 ```
-src/                React app — pages/ (tabs, login, connect), components/, main.tsx (routes)
-server/app.ts       Hono API — every /api route + the password gate
-server/dev.ts       Local API server (:8787)
-api/index.ts        Vercel function entry (wraps server/app.ts)
-lib/                Shopee client, Supabase, crypto, tokens, chatbot, AI providers, orders
-db/                 Database schema (shops + tokens)
-config/chatbot.json Chat reply rules + AI tone examples
-vercel.json         /api/* → function, everything else → index.html
+src/                  React app — pages/ (tabs, login, connect), components/, main.tsx (routes)
+server/app.ts         Hono API — every /api route + the password gate; talks only to the adapter factory
+server/dev.ts         Local API server (:8787)
+api/index.ts          Vercel function entry (wraps server/app.ts)
+adapters/
+  types.ts            The platform contract: domain models (Product, Order, Conversation, …) + capabilities
+  factory.ts          The only place that knows which platforms exist: getAdapter / getCapability
+  shopee/
+    index.ts          Shopee adapter — wires the capabilities below together
+    api/              Thin typed wrappers over Shopee endpoints (client, auth, product, order, chat, marketing)
+    utils/            Request signing, raw → domain mappers, timestamp units
+    connect.ts …      One file per capability: connect, catalog, orders, chat, marketing, webhook
+  whatsapp/           WhatsApp Cloud API adapter (scaffold — send + webhook only, see its index.ts)
+  mock/chat.ts        Seeded dev chat, swapped in for any platform when MOCK_CHAT=true
+lib/                  Platform-neutral core: Supabase, crypto, tokens, shops fan-out, analytics, chatbot, AI
+db/schema.sql         Fresh-install schema (shops + tokens); db/migrations/ for existing databases
+config/chatbot.json   Chat reply rules + AI tone examples
+vercel.json           /api/* → function, everything else → index.html
 ```
+
+### Platforms (adapters)
+Every platform implements `PlatformAdapter` from `adapters/types.ts`. A platform only declares the
+capabilities it has — `connect`, `catalog`, `orders`, `chat`, `promotions`, `ads`, `webhook` — and
+pages skip shops whose platform lacks a feature (a WhatsApp number never shows up on Products).
+Routes and pages see only the domain models, never a platform's raw API.
+
+Connect and webhooks are one set of routes for every platform: `/api/<platform>/authorize`,
+`/api/<platform>/callback`, `/api/<platform>/webhook`. Shopee's redirect stays `/api/shopee/callback`.
+
+**Adding a platform** (e.g. Lazada):
+1. Create `adapters/lazada/` — `api/` for raw calls, `utils/mappers.ts` to map into domain models,
+   one file per capability, and `index.ts` exporting the adapter.
+2. Add `"lazada"` to `PlatformId` in `adapters/types.ts` and register it in `adapters/factory.ts`.
+3. Add its env vars to `.env.example`. Nothing in `server/` or `src/` needs to change.
+
+Backend imports end in `.js` (`import { x } from "./y.js"`) even though the files are `.ts`:
+plain Node ESM — what the Vercel function runs — needs the extension, and TypeScript maps it back.
