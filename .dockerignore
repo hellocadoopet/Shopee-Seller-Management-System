@@ -1,0 +1,8 @@
+**/node_modules
+worker/wa-sessions
+.env
+.env.*
+dist
+.git
+.claude
+.next

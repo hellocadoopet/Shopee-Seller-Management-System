@@ -26,6 +26,24 @@ send) · `wa/baileys-session.ts` (one socket) · `wa/persistence.ts`, `wa/histor
 
 `npm run dev` / `npm start` load `../.env.local` if it exists.
 
+## Deploy on Railway
+
+`railway.json` (repo root) builds `worker/Dockerfile` and health-checks `GET /health`. It only
+redeploys when `worker/`, `lib/`, `adapters/whatsapp/` or the root lockfile change — each redeploy
+drops the sockets for a few seconds, so dashboard-only pushes shouldn't restart it.
+
+1. Hobby plan (the free plan's $1 credit runs out in ~10 days and stops the service).
+2. New service → Deploy from GitHub repo → this repo, branch you deploy from. Root directory: repo root.
+3. **Add a volume mounted at `/data`** — the login folders live there. Without it every redeploy logs
+   every number out.
+4. Variables: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `WA_WORKER_SECRET`,
+   `WA_SESSIONS_DIR=/data/wa-sessions`. Don't set a port — Railway injects `PORT` and the worker uses it.
+5. Settings → Networking → Generate domain. Put `https://<that domain>` in the dashboard's
+   `WA_WORKER_URL` (Vercel), with the same `WA_WORKER_SECRET`.
+
+Keep it at one replica — Railway refuses replicas on a service with a volume anyway, which is what
+we want: two copies of one WhatsApp login would keep kicking each other off.
+
 ## Run
 
 ```sh

@@ -10,8 +10,8 @@ export const workerEnv = {
   secret: process.env.WA_WORKER_SECRET ?? "",
   /** One Baileys auth folder per account: <dir>/<accountId>/. Losing it means re-scanning the QR. */
   sessionsDir: resolve(process.env.WA_SESSIONS_DIR || resolve(here, "wa-sessions")),
-  // Not 4000: the old wa-manager worker already listens there on the same VPS.
-  port: Number(process.env.WA_WORKER_PORT || 4100),
+  // PORT is what hosts like Railway assign. Not 4000 on the VPS: the old wa-manager worker uses it.
+  port: Number(process.env.WA_WORKER_PORT || process.env.PORT || 4100),
 };
 
 /** Throws if anything the worker can't run without is unset. */
