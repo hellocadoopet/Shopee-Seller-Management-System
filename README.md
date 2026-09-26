@@ -44,7 +44,7 @@ Single owner, multiple shops. Not a multi-tenant SaaS.
 | API | Hono — runs as one Vercel function in prod, a Node server in dev |
 | Database | Supabase (Postgres) — only connected shops + their tokens |
 | Hosting | Vercel (frontend + API together) |
-| Platforms | Shopee Open Platform v2 (full); WhatsApp Cloud API (scaffold) — one adapter each |
+| Platforms | Shopee Open Platform v2; WhatsApp via Baileys (linked device, QR) — one adapter each |
 | AI | Claude / OpenAI / DeepSeek (pick one) |
 
 No message queue, no Redis, no separate worker service. Simple on purpose.
@@ -155,8 +155,10 @@ adapters/
     api/              Thin typed wrappers over Shopee endpoints (client, auth, product, order, chat, marketing)
     utils/            Request signing, raw → domain mappers, timestamp units
     connect.ts …      One file per capability: connect, catalog, orders, chat, marketing, webhook
-  whatsapp/           WhatsApp Cloud API adapter (scaffold — send + webhook only, see its index.ts)
+  whatsapp/           WhatsApp adapter — reads the worker's tables, sends/pairs through the worker;
+                      contract.ts is the dashboard ↔ worker contract (tables, HTTP API, media paths)
   mock/chat.ts        Seeded dev chat, swapped in for any platform when MOCK_CHAT=true
+worker/               Always-on WhatsApp worker (Baileys sockets) — runs on a VPS, not Vercel. See worker/README.md
 lib/                  Platform-neutral core: Supabase, crypto, tokens, shops fan-out, analytics, chatbot, AI
 db/schema.sql         Fresh-install schema (shops + tokens); db/migrations/ for existing databases
 config/chatbot.json   Chat reply rules + AI tone examples
@@ -171,6 +173,20 @@ Routes and pages see only the domain models, never a platform's raw API.
 
 Connect and webhooks are one set of routes for every platform: `/api/<platform>/authorize`,
 `/api/<platform>/callback`, `/api/<platform>/webhook`. Shopee's redirect stays `/api/shopee/callback`.
+
+### WhatsApp
+WhatsApp links like WhatsApp Web: Connect → "Link WhatsApp by QR code" → scan with the phone
+(Settings → Linked devices). It uses Baileys — the *unofficial* linked-device protocol, the same
+path the old wa-manager used — so an always-on process must hold each number's socket: the
+**worker** (`worker/`), deployed to a VPS. The worker writes `wa_*` tables
+(`db/migrations/002_whatsapp.sql`) and uploads media to the private `media` bucket
+(`whatsapp/<account>/<conversation>/<message>.<ext>`); the dashboard reads those directly, so the
+inbox keeps working while the worker restarts, and calls the worker only to pair and to send.
+
+Scope: see and reply to 1:1 chats (text replies; incoming images, video, voice notes and documents
+are shown). Full chat history is synced when a number links; history media shows as a placeholder.
+Not ported from wa-manager: campaigns, auto-reply, AI agents, flows, follow-ups, CRM, kanban, tags,
+team logins. Needs `WA_WORKER_URL` + `WA_WORKER_SECRET` on Vercel (same secret on the worker).
 
 **Adding a platform** (e.g. Lazada):
 1. Create `adapters/lazada/` — `api/` for raw calls, `utils/mappers.ts` to map into domain models,
