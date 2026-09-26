@@ -10,3 +10,6 @@ dist
 
 # env backups
 .env.local.backup-*
+
+# WhatsApp worker auth state: one folder per paired number, holds its login keys
+wa-sessions
