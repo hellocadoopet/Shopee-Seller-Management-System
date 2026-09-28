@@ -41,9 +41,9 @@ Single owner, multiple shops. Not a multi-tenant SaaS.
 | Layer | Tech |
 |---|---|
 | Pages | React 19 + Vite (single-page app, react-router) |
-| API | Hono — runs as one Vercel function in prod, a Node server in dev |
+| API | Hono — a Node server (Railway in prod, localhost in dev) |
 | Database | Supabase (Postgres) — only connected shops + their tokens |
-| Hosting | Vercel (frontend + API together) |
+| Hosting | Vercel (frontend, proxies `/api/*`) + Railway (API service, WhatsApp worker service) |
 | Platforms | Shopee Open Platform v2; WhatsApp via Baileys (linked device, QR) — one adapter each |
 | AI | Claude / OpenAI / DeepSeek (pick one) |
 
@@ -99,22 +99,21 @@ Put the tunnel URL in `SHOPEE_REDIRECT_URL` and register the same URL in Shopee 
 
 ---
 
-## Deploying (Vercel)
+## Deploying (Vercel + Railway)
 
-1. Push to GitHub (already done).
-2. Vercel → New Project → import this repo.
-3. Add all the env vars above in Vercel's **Environment Variables**.
-4. Deploy → get a permanent URL like `https://....vercel.app`.
-5. Set `SHOPEE_REDIRECT_URL` to `https://<vercel-url>/api/shopee/callback` and register the same in Shopee Console.
-6. Set `APP_PASSWORD` in Vercel to lock the app before using real shops.
-
-Every `git push` auto-deploys.
+- **Vercel** serves the built SPA and proxies `/api/*` to the Railway API (`vercel.json`). No env vars needed there. Every push to `master` auto-deploys.
+- **Railway** runs two services from this repo, both Dockerfiles built from the repo root:
+  1. **api**: Dockerfile `server/Dockerfile`, health check `/api/health`, all the env vars above. Its domain is hardcoded in `vercel.json`'s `/api` rewrite.
+  2. **worker**: Dockerfile `worker/Dockerfile`, health check `/health`. See `worker/README.md` (volume at `/data`, env vars).
+  - No `railway.json` (a root one applies to every service in the repo): Dockerfile path, health check and watch patterns are set on each service.
+- `SHOPEE_REDIRECT_URL` stays `https://<vercel-url>/api/shopee/callback` (the proxy forwards it), registered the same in Shopee Console.
+- Set `APP_PASSWORD` on the Railway api service to lock the app before using real shops.
 
 ---
 
 ## For team members
 
-- **To edit the code:** you're invited as a collaborator. Clone the repo, `npm install`, create your own `.env.local`, edit, then push. Vercel auto-deploys.
+- **To edit the code:** you're invited as a collaborator. Clone the repo, `npm install`, create your own `.env.local`, edit, then push. Vercel and Railway auto-deploy.
 - **To use the app:** open the live URL and enter the shared password.
 - **Do not** put this project inside Google Drive/OneDrive — `node_modules` breaks their sync. Use a normal folder; GitHub is the backup.
 
@@ -145,8 +144,7 @@ Every `git push` auto-deploys.
 ```
 src/                  React app — pages/ (tabs, login, connect), components/, main.tsx (routes)
 server/app.ts         Hono API — every /api route + the password gate; talks only to the adapter factory
-server/dev.ts         Local API server (:8787)
-api/index.ts          Vercel function entry (wraps server/app.ts)
+server/index.ts       API server (Railway in prod, :8787 locally); server/Dockerfile
 adapters/
   types.ts            The platform contract: domain models (Product, Order, Conversation, …) + capabilities
   factory.ts          The only place that knows which platforms exist: getAdapter / getCapability
@@ -158,11 +156,11 @@ adapters/
   whatsapp/           WhatsApp adapter — reads the worker's tables, sends/pairs through the worker;
                       contract.ts is the dashboard ↔ worker contract (tables, HTTP API, media paths)
   mock/chat.ts        Seeded dev chat, swapped in for any platform when MOCK_CHAT=true
-worker/               Always-on WhatsApp worker (Baileys sockets) — runs on a VPS, not Vercel. See worker/README.md
+worker/               Always-on WhatsApp worker (Baileys sockets) — runs as its own Railway service. See worker/README.md
 lib/                  Platform-neutral core: Supabase, crypto, tokens, shops fan-out, analytics, chatbot, AI
 db/schema.sql         Fresh-install schema (shops + tokens); db/migrations/ for existing databases
 config/chatbot.json   Chat reply rules + AI tone examples
-vercel.json           /api/* → function, everything else → index.html
+vercel.json           /api/* → Railway API (proxy), everything else → index.html
 ```
 
 ### Platforms (adapters)
@@ -178,7 +176,7 @@ Connect and webhooks are one set of routes for every platform: `/api/<platform>/
 WhatsApp links like WhatsApp Web: Connect → "Link WhatsApp by QR code" → scan with the phone
 (Settings → Linked devices). It uses Baileys — the *unofficial* linked-device protocol, the same
 path the old wa-manager used — so an always-on process must hold each number's socket: the
-**worker** (`worker/`), deployed to a VPS. The worker writes `wa_*` tables
+**worker** (`worker/`), deployed as its own Railway service. The worker writes `wa_*` tables
 (`db/migrations/002_whatsapp.sql`) and uploads media to the private `media` bucket
 (`whatsapp/<account>/<conversation>/<message>.<ext>`); the dashboard reads those directly, so the
 inbox keeps working while the worker restarts, and calls the worker only to pair and to send.
@@ -186,7 +184,7 @@ inbox keeps working while the worker restarts, and calls the worker only to pair
 Scope: see and reply to 1:1 chats (text replies; incoming images, video, voice notes and documents
 are shown). Full chat history is synced when a number links; history media shows as a placeholder.
 Not ported from wa-manager: campaigns, auto-reply, AI agents, flows, follow-ups, CRM, kanban, tags,
-team logins. Needs `WA_WORKER_URL` + `WA_WORKER_SECRET` on Vercel (same secret on the worker).
+team logins. Needs `WA_WORKER_URL` + `WA_WORKER_SECRET` on the Railway api service (same secret on the worker).
 
 **Adding a platform** (e.g. Lazada):
 1. Create `adapters/lazada/` — `api/` for raw calls, `utils/mappers.ts` to map into domain models,
@@ -195,4 +193,4 @@ team logins. Needs `WA_WORKER_URL` + `WA_WORKER_SECRET` on Vercel (same secret o
 3. Add its env vars to `.env.example`. Nothing in `server/` or `src/` needs to change.
 
 Backend imports end in `.js` (`import { x } from "./y.js"`) even though the files are `.ts`:
-plain Node ESM — what the Vercel function runs — needs the extension, and TypeScript maps it back.
+plain Node ESM — what the API server runs — needs the extension, and TypeScript maps it back.

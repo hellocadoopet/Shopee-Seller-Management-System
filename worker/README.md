@@ -1,7 +1,8 @@
 # WhatsApp worker
 
 An always-on Node process that holds the WhatsApp (Baileys) sockets. Vercel functions can't keep a
-socket open, so this runs separately — on a VPS under pm2.
+socket open, so this runs separately — as its own Railway service (the dashboard API is
+a second Railway service, `server/Dockerfile`).
 
 - Writes `wa_accounts`, `wa_contacts`, `wa_conversations`, `wa_messages` (see
   `db/migrations/002_whatsapp.sql`) and, when a number finishes pairing, its `shops` row.
@@ -28,8 +29,9 @@ send) · `wa/baileys-session.ts` (one socket) · `wa/persistence.ts`, `wa/histor
 
 ## Deploy on Railway
 
-`railway.json` (repo root) builds `worker/Dockerfile` and health-checks `GET /health`. It only
-redeploys when `worker/`, `lib/`, `adapters/whatsapp/` or the root lockfile change — each redeploy
+The service builds `worker/Dockerfile` and health-checks `GET /health` (set on the service; there is
+no `railway.json`, a root one would apply to the api service too). Watch patterns make it only
+redeploy when `worker/`, `lib/`, `adapters/whatsapp/` or the root lockfile change — each redeploy
 drops the sockets for a few seconds, so dashboard-only pushes shouldn't restart it.
 
 1. Hobby plan (the free plan's $1 credit runs out in ~10 days and stops the service).
@@ -39,7 +41,7 @@ drops the sockets for a few seconds, so dashboard-only pushes shouldn't restart 
 4. Variables: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `WA_WORKER_SECRET`,
    `WA_SESSIONS_DIR=/data/wa-sessions`. Don't set a port — Railway injects `PORT` and the worker uses it.
 5. Settings → Networking → Generate domain. Put `https://<that domain>` in the dashboard's
-   `WA_WORKER_URL` (Vercel), with the same `WA_WORKER_SECRET`.
+   `WA_WORKER_URL` (Railway api service), with the same `WA_WORKER_SECRET`.
 
 Keep it at one replica — Railway refuses replicas on a service with a volume anyway, which is what
 we want: two copies of one WhatsApp login would keep kicking each other off.
@@ -65,4 +67,4 @@ pm2 logs wa-worker
 Put it behind HTTPS (e.g. Caddy/nginx reverse proxy to `127.0.0.1:4100`) — the secret must never
 travel over plain HTTP. `GET /health` is public; everything else needs the bearer token.
 
-Baileys is deliberately **not** in the root `package.json`: Vercel installs only the root package.
+Baileys is deliberately **not** in the root `package.json`: the API image and Vercel install only the root package.
