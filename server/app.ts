@@ -22,7 +22,7 @@ app.onError((e, c) => c.json({ error: String(e) }, 500));
 //  - login/logout             → the gate itself
 //  - <platform>/callback|webhook → the platforms' redirects and servers must reach these
 // ─────────────────────────────────────────────────────────────
-const PUBLIC = ["/api/login", "/api/logout"];
+const PUBLIC = ["/api/login", "/api/logout", "/api/health"];
 const PLATFORM_PUBLIC = /^\/api\/([a-z]+)\/(callback|webhook)$/;
 
 app.use(async (c, next) => {
@@ -31,6 +31,9 @@ app.use(async (c, next) => {
   if (getCookie(c, "app_auth") === (await computeAuthToken())) return next();
   return c.json({ error: "unauthorized" }, 401);
 });
+
+/** Railway health check; public so it passes with the password lock on. */
+app.get("/health", (c) => c.json({ ok: true }));
 
 /** Pages call this on load; 401 (from the gate above) sends them to /login. */
 app.get("/session", (c) => c.json({ ok: true }));

@@ -12,8 +12,12 @@ export const webhook: WebhookCapability = {
   verify(req) {
     const sig = req.header("authorization");
     if (!sig) return false;
-    // ponytail: signs the URL as received; if Shopee's registered URL differs (proxy/https rewrite), rebuild it from x-forwarded-* headers.
-    const expected = Buffer.from(hmac(shopeeConfig.partnerKey, `${req.url}|${req.body}`), "hex");
+    // Shopee signs the public URL it posted to (the Vercel domain), but the API sees its own Railway
+    // host behind the Vercel rewrite, so rebuild the URL on the public origin (same as the redirect's).
+    const received = new URL(req.url);
+    const origin = shopeeConfig.redirectUrl ? new URL(shopeeConfig.redirectUrl).origin : received.origin;
+    const url = origin + received.pathname + received.search;
+    const expected = Buffer.from(hmac(shopeeConfig.partnerKey, `${url}|${req.body}`), "hex");
     const given = Buffer.from(sig, "hex");
     return given.length === expected.length && crypto.timingSafeEqual(given, expected);
   },

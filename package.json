@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "npm run dev:api & npm run dev:web",
     "dev:web": "vite",
-    "dev:api": "tsx watch --env-file-if-exists=.env --env-file-if-exists=.env.local server/dev.ts",
+    "dev:api": "tsx watch --env-file-if-exists=.env --env-file-if-exists=.env.local server/index.ts",
+    "start": "node --import tsx server/index.ts",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
