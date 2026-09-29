@@ -11,6 +11,7 @@ import type { PairingStatusResponse, WaAccountStatus } from "../../adapters/what
 import { logger } from "../logger.js";
 import { accountExists, createPairedAccount, listResumableAccounts, setAccountStatus } from "./accounts.js";
 import { persistHistory } from "./history.js";
+import { backfillFromContacts, hasAddressBook, learn } from "./directory.js";
 import { attachMedia } from "./media.js";
 import { applyReceipt, persistMessage, persistOutbound } from "./persistence.js";
 import { drain } from "./queue.js";
@@ -49,6 +50,8 @@ export class SessionManager {
   private pairingSessions = new Map<string, WaSession>();
   /** Accounts mid-reconnect, so the watchdog never runs two at once. */
   private reconnecting = new Set<string>();
+  /** Accounts whose directory was checked this process (backfill + one contact resync if needed). */
+  private directoryChecked = new Set<string>();
   /** False until the boot resume could read wa_accounts (Supabase may be down at boot). */
   private resumedAll = false;
   private readonly pairingTtlMs: number;
@@ -287,6 +290,14 @@ export class SessionManager {
         const done = this.completePairing(pairing, session, phoneNumber);
         ready = done.then(() => pairing.state === "connected");
       }
+      // A fresh link gets the contact list from Baileys' own initial sync; a resumed one may predate the directory.
+      if (!pairing) void this.checkDirectory(id, session);
+    });
+
+    session.on("directory", (identities) => {
+      void (ready ?? Promise.resolve(false))
+        .then((ok) => (ok ? learn(id, identities) : undefined))
+        .catch((err) => logger.error({ accountId: id, count: identities.length, err: String(err) }, "directory update failed"));
     });
 
     session.on("status", (status) => {
@@ -331,6 +342,25 @@ export class SessionManager {
         .then((ok) => (ok ? applyReceipt(id, waMessageId, status) : false))
         .catch((err) => logger.error({ accountId: id, waMessageId, err: String(err) }, "receipt failed"));
     });
+  }
+
+  /**
+   * Once per account per process: learn the "@lid" ↔ phone pairings already stored in contacts
+   * (merging duplicates made before the directory existed), and if no address-book names were ever
+   * received, ask WhatsApp to re-send the contact list.
+   */
+  private async checkDirectory(accountId: string, session: WaSession) {
+    if (this.directoryChecked.has(accountId)) return;
+    this.directoryChecked.add(accountId);
+    try {
+      await backfillFromContacts(accountId);
+      if (await hasAddressBook(accountId)) return;
+      logger.info({ accountId }, "no address book yet — requesting contact resync");
+      await session.resyncContacts();
+    } catch (err) {
+      this.directoryChecked.delete(accountId); // retry on the next connect
+      logger.error({ accountId, err: String(err) }, "directory check failed");
+    }
   }
 
   // ─── Send / health / shutdown ───

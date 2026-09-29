@@ -4,13 +4,22 @@ import type { ConversationWithContact } from "../api/store.js";
 
 const toMs = (iso: string | null) => (iso ? Date.parse(iso) : null);
 
+/** Address-book name, then their own WhatsApp name, then the number — or say the number is hidden. */
+function displayName(contact: ConversationWithContact["contact"]): string | null {
+  if (!contact) return null;
+  if (contact.saved_name) return contact.saved_name;
+  if (contact.name) return contact.name;
+  if (contact.phone_number) return `+${contact.phone_number}`;
+  return contact.jid.endsWith("@lid") ? "WhatsApp user (number hidden)" : null;
+}
+
 export function toConversation(c: ConversationWithContact): Conversation {
   const contact = c.contact;
   return {
     id: c.id,
     // Informational only — sends look the target up server-side (replyTarget), so a stale list can't misroute.
     peer_id: contact?.routing_jid ?? contact?.jid ?? "",
-    peer_name: contact?.name ?? (contact?.phone_number ? `+${contact.phone_number}` : null),
+    peer_name: displayName(contact),
     unread: c.unread_count,
     last_text: c.last_message_preview,
     last_at: toMs(c.last_message_at),

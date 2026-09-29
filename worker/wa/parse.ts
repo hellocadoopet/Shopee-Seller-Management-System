@@ -1,7 +1,7 @@
 /** Baileys message shapes → Envelope. Pure functions, no socket. */
-import { normalizeMessageContent, type WAMessage, type WAMessageContent } from "@whiskeysockets/baileys";
+import { jidNormalizedUser, normalizeMessageContent, type Contact, type WAMessage, type WAMessageContent } from "@whiskeysockets/baileys";
 import type { WaMessageType } from "../../adapters/whatsapp/contract.js";
-import type { Envelope, ReceiptStatus } from "./session.js";
+import type { Envelope, Identity, ReceiptStatus } from "./session.js";
 
 /** 1:1 chats only: phone jids and "@lid" privacy jids. Groups, status, broadcasts, newsletters are skipped. */
 export function isDirectChat(jid: string | null | undefined): jid is string {
@@ -11,6 +11,31 @@ export function isDirectChat(jid: string | null | undefined): jid is string {
 /** "60123456789@s.whatsapp.net" or "60123456789:12@s.whatsapp.net" → "60123456789". "@lid" ids aren't phones. */
 export function jidToPhone(jid: string): string | null {
   return /^(\d+)(?::\d+)?@s\.whatsapp\.net$/.exec(jid)?.[1] ?? null;
+}
+
+const isPhoneJid = (j: string | null | undefined): j is string => !!j && j.endsWith("@s.whatsapp.net");
+const isLidJid = (j: string | null | undefined): j is string => !!j && j.endsWith("@lid");
+/** Drops a device suffix ("60123:12@s.whatsapp.net" → "60123@s.whatsapp.net"). */
+const norm = (j: string | null | undefined) => (j ? jidNormalizedUser(j) || null : null);
+
+/**
+ * A contact record (contact sync / history sync / contacts.update) → who it is. `name` is the
+ * linked phone's address-book name; `notify` is the name they set themselves. `id` is either id.
+ */
+export function identityOfContact(c: Partial<Contact>): Identity | null {
+  const pn = [c.jid, c.id].map(norm).find(isPhoneJid) ?? null;
+  const lid = [c.lid, c.id].map(norm).find(isLidJid) ?? null;
+  if (!pn && !lid) return null;
+  return { pn, lid, savedName: c.name || null, pushName: c.notify || null };
+}
+
+/** A history-sync chat → who it's with. 1:1 chats carry both ids (pnJid / lidJid) and the chat's name. */
+export function identityOfChat(chat: { id?: string | null; pnJid?: string | null; lidJid?: string | null; name?: string | null }): Identity | null {
+  const id = norm(chat.id);
+  const pn = norm(chat.pnJid) ?? (isPhoneJid(id) ? id : null);
+  const lid = norm(chat.lidJid) ?? (isLidJid(id) ? id : null);
+  if (!isPhoneJid(pn) && !isLidJid(lid)) return null;
+  return { pn: isPhoneJid(pn) ? pn : null, lid: isLidJid(lid) ? lid : null, savedName: chat.name || null, pushName: null };
 }
 
 /**

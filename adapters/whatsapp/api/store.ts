@@ -4,7 +4,7 @@ import { supabase } from "../../../lib/supabase.js";
 import { MEDIA_BUCKET, type WaContactRow, type WaConversationRow, type WaMessageRow } from "../contract.js";
 
 export type ConversationWithContact = WaConversationRow & {
-  contact: Pick<WaContactRow, "jid" | "routing_jid" | "name" | "phone_number"> | null;
+  contact: Pick<WaContactRow, "jid" | "routing_jid" | "name" | "saved_name" | "phone_number"> | null;
 };
 
 const PAGE_SIZE = 60;
@@ -14,7 +14,7 @@ const MEDIA_URL_TTL_SECONDS = 6 * 3600; // the thread page caches each URL, so i
 export async function listConversations(accountId: string, unreadOnly: boolean): Promise<ConversationWithContact[]> {
   let q = supabase
     .from("wa_conversations")
-    .select("id, account_id, contact_id, last_message_at, last_message_preview, unread_count, contact:wa_contacts(jid, routing_jid, name, phone_number)")
+    .select("id, account_id, contact_id, last_message_at, last_message_preview, unread_count, contact:wa_contacts(jid, routing_jid, name, saved_name, phone_number)")
     .eq("account_id", accountId)
     .order("last_message_at", { ascending: false, nullsFirst: false })
     .limit(PAGE_SIZE);

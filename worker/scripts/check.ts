@@ -21,7 +21,8 @@ type Row = Record<string, unknown>;
 const SCHEMA: Record<string, { unique: string[][]; fk?: Record<string, string>; defaults?: () => Row }> = {
   shops: { unique: [["id"], ["platform", "external_id"]], defaults: () => ({ region: "MY", connected_at: new Date().toISOString(), disconnected_at: null }) },
   wa_accounts: { unique: [["id"], ["shop_id"]], fk: { shop_id: "shops" }, defaults: () => ({ status: "connecting", last_seen_at: null, created_at: new Date().toISOString() }) },
-  wa_contacts: { unique: [["id"], ["account_id", "jid"]], fk: { account_id: "wa_accounts" }, defaults: () => ({ routing_jid: null, name: null, phone_number: null }) },
+  wa_contacts: { unique: [["id"], ["account_id", "jid"]], fk: { account_id: "wa_accounts" }, defaults: () => ({ routing_jid: null, name: null, saved_name: null, phone_number: null }) },
+  wa_directory: { unique: [["account_id", "jid"]], fk: { account_id: "wa_accounts" }, defaults: () => ({ pn_jid: null, saved_name: null, push_name: null }) },
   wa_conversations: {
     unique: [["id"], ["account_id", "contact_id"]],
     fk: { account_id: "wa_accounts", contact_id: "wa_contacts" },
@@ -41,6 +42,9 @@ const insertOrder: string[] = [];
 const json = (status: number, body: unknown) =>
   new Response(body === undefined ? "" : JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
+/** PostgREST `like`: % matches anything, everything else literally. */
+const likeRe = (pattern: string) => new RegExp(`^${pattern.split("%").map((part) => part.replace(/[.*+?^$()|[\]\\{}]/g, "\\$&")).join(".*")}$`);
+
 function matches(row: Row, params: URLSearchParams) {
   for (const [col, expr] of params) {
     if (["select", "on_conflict", "columns", "limit", "order", "offset"].includes(col)) continue;
@@ -51,6 +55,8 @@ function matches(row: Row, params: URLSearchParams) {
     if (op === "eq" && String(cell) !== val) return false;
     if (op === "neq" && String(cell) === val) return false;
     if (op === "is" && val === "null" && cell != null) return false;
+    if (op === "not" && val === "is.null" && cell == null) return false;
+    if (op === "like" && !likeRe(val).test(String(cell ?? ""))) return false;
     if (op === "in") {
       const list = val.replace(/^\(|\)$/g, "").split(",").map((v) => v.replace(/^"|"$/g, ""));
       if (!list.includes(String(cell))) return false;
@@ -108,11 +114,25 @@ async function fakeFetch(input: string | URL | Request, init?: RequestInit): Pro
     return json(status, rows[0]);
   };
 
-  if (method === "GET") {
+  if (method === "GET" || method === "HEAD") {
     let rows = db[table]!.filter((r) => matches(r, url.searchParams));
+    const order = url.searchParams.get("order");
+    if (order) {
+      const [col, dir] = order.split(".");
+      rows = [...rows].sort((a, b) => (String(a[col!]) < String(b[col!]) ? -1 : String(a[col!]) > String(b[col!]) ? 1 : 0) * (dir === "desc" ? -1 : 1));
+    }
+    const total = rows.length;
+    const offset = Number(url.searchParams.get("offset") ?? 0);
     const limit = url.searchParams.get("limit");
-    if (limit) rows = rows.slice(0, Number(limit));
+    rows = rows.slice(offset, limit ? offset + Number(limit) : undefined);
+    if (method === "HEAD") return new Response(null, { status: 200, headers: { "content-range": `*/${total}` } });
     return respond(rows);
+  }
+
+  if (method === "DELETE") {
+    const gone = db[table]!.filter((r) => matches(r, url.searchParams));
+    db[table] = db[table]!.filter((r) => !gone.includes(r));
+    return respond(gone);
   }
 
   if (method === "PATCH") {
@@ -161,7 +181,7 @@ const { createApp } = await import("../http.js");
 const { SessionManager } = await import("../wa/manager.js");
 const { drain } = await import("../wa/queue.js");
 const { ensureMediaBucket } = await import("../wa/media.js");
-const { toEnvelope, receiptStatus } = await import("../wa/parse.js");
+const { toEnvelope, receiptStatus, identityOfChat, identityOfContact } = await import("../wa/parse.js");
 const { MEDIA_BUCKET, MEDIA_MAX_BYTES, mediaObjectPath } = await import("../../adapters/whatsapp/contract.js");
 
 // ─── Fake session ───
@@ -175,6 +195,7 @@ class FakeSession extends EventEmitter<SessionEvents> implements WaSession {
   started = 0;
   stopped = false;
   sent: Array<{ jid: string; text: string }> = [];
+  resyncs = 0;
   /** Emit the "append" echo of our own send before resolving, like Baileys does. */
   echo = false;
   constructor(
@@ -202,6 +223,9 @@ class FakeSession extends EventEmitter<SessionEvents> implements WaSession {
     const id = `OUT-${++sendCounter}`;
     if (this.echo) this.emit("message", env({ waMessageId: id, routingJid: jid, direction: "out", body: text }));
     return id;
+  }
+  async resyncContacts() {
+    this.resyncs++;
   }
   setStatus(s: SessionStatus) {
     this.status = s;
@@ -803,6 +827,155 @@ await test("parse: 1:1 only, @lid canonical via senderPn, captions, types, recei
   eq(mine.pushName, null, "own push name not used");
   eq(toEnvelope(msg({ remoteJid: "601@s.whatsapp.net", id: "h" }, { locationMessage: {} }), false)?.type, "other", "location → other");
   eq([0, 1, 2, 3, 4, 5].map(receiptStatus).join(","), "failed,,sent,delivered,read,read", "receipt codes");
+});
+
+// ─── Directory: "@lid" ↔ phone, saved names ───
+
+const contactsOf = (accountId: string, jids: string[]) => rows("wa_contacts", (r) => r.account_id === accountId && jids.includes(String(r.jid)));
+const msgsIn = (convId: unknown) => rows("wa_messages", (r) => r.conversation_id === convId);
+
+await test('reported bug: our messages to an "@lid" (no phone) + her reply naming her phone → ONE contact, all messages in it', async () => {
+  const P = "60144444444@s.whatsapp.net", L = "44444444444@lid";
+  const t0 = Date.now() - 5 * 86400_000;
+  // Batch 1: an older stretch of the chat under her phone jid.
+  A().emit("history", [
+    env({ routingJid: P, body: "old in", isHistory: true, timestamp: new Date(t0) }),
+    env({ routingJid: P, direction: "out", body: "old out", isHistory: true, timestamp: new Date(t0 + 1000) }),
+  ]);
+  // Batch 2: only OUR messages, sent to her "@lid" — Baileys gives no phone for these.
+  A().emit("history", [1, 2, 3].map((i) => env({ routingJid: L, direction: "out", body: `to lid ${i}`, isHistory: true, timestamp: new Date(t0 + 86400_000 + i) })));
+  await settle(accountId);
+  eq(contactsOf(accountId, [P, L]).length, 2, "before the pairing is known they're apart (the state you saw)");
+  // Batch 3: her reply from the "@lid", which names her phone (senderPn).
+  A().emit("history", [env({ routingJid: L, canonicalJid: P, body: "her reply", isHistory: true, timestamp: new Date(t0 + 2 * 86400_000) })]);
+  await settle(accountId);
+  const c = contactsOf(accountId, [P, L]);
+  eq(c.length, 1, "merged into one contact");
+  eq(c[0]!.jid, P, "keyed by her phone");
+  eq(c[0]!.routing_jid, L, "replies still go to her @lid");
+  const conv = convOf(accountId, P)!;
+  eq(msgsIn(conv.id).length, 6, "all 6 messages in one conversation");
+  eq(conv.last_message_preview, "her reply", "last message recomputed");
+  eq(rows("wa_conversations", (r) => r.account_id === accountId && !rows("wa_contacts", (x) => x.id === r.contact_id).length).length, 0, "no orphan conversations");
+  // Later, live: we write to her "@lid" again from the phone → straight into her contact.
+  A().emit("message", env({ routingJid: L, direction: "out", body: "live to lid" }));
+  await settle(accountId);
+  eq(contactsOf(accountId, [P, L]).length, 1, "no new contact");
+  eq(msgsIn(conv.id).length, 7, "joined her conversation");
+});
+
+await test("live: a senderPn message merges an existing @lid contact into the phone twin; unread adds up", async () => {
+  const P = "60155555555@s.whatsapp.net", L = "55555555555@lid";
+  A().emit("message", env({ routingJid: P, body: "via phone" })); // unread 1 on P
+  A().emit("message", env({ routingJid: L, body: "via lid, no phone yet" })); // separate L contact, unread 1
+  await settle(accountId);
+  eq(contactsOf(accountId, [P, L]).length, 2, "apart before the pairing");
+  A().emit("message", env({ routingJid: L, canonicalJid: P, body: "via lid, names phone" }));
+  await settle(accountId);
+  eq(contactsOf(accountId, [P, L]).length, 1, "merged");
+  const conv = convOf(accountId, P)!;
+  eq(msgsIn(conv.id).length, 3, "all three messages");
+  eq(conv.unread_count, 3, "1 + 1 carried over + 1 new");
+});
+
+await test("contact sync: address-book names fill saved_name (push name kept); a pairing re-keys a lid-only contact", async () => {
+  const L = "66666666666@lid", PL = "60166666666@s.whatsapp.net";
+  const P = "60177777777@s.whatsapp.net";
+  A().emit("message", env({ routingJid: L, body: "lid only" }));
+  A().emit("message", env({ routingJid: P, body: "phone", pushName: "zack_k" }));
+  await settle(accountId);
+  A().emit("directory", [
+    { lid: L, pn: PL, savedName: "Aunty Mei", pushName: null },
+    { lid: null, pn: P, savedName: "Zack Kho", pushName: null },
+  ]);
+  await settle(accountId);
+  const mei = contactsOf(accountId, [L, PL]);
+  eq(mei.length, 1, "one contact");
+  eq(mei[0]!.jid, PL, "re-keyed from @lid to phone");
+  eq(mei[0]!.phone_number, "60166666666", "phone filled");
+  eq(mei[0]!.saved_name, "Aunty Mei", "address-book name");
+  const zack = contactsOf(accountId, [P])[0]!;
+  eq(zack.saved_name, "Zack Kho", "address-book name");
+  eq(zack.name, "zack_k", "push name kept alongside");
+  A().emit("directory", [{ lid: null, pn: P, savedName: "Zack Kho (supplier)", pushName: null }]);
+  await settle(accountId);
+  eq(contactsOf(accountId, [P])[0]!.saved_name, "Zack Kho (supplier)", "rename in the address book follows");
+});
+
+await test("directory remembers people with no chat yet: their first message arrives already named", async () => {
+  const P = "60188888888@s.whatsapp.net";
+  A().emit("directory", [{ lid: "88880000@lid", pn: P, savedName: "New Supplier", pushName: null }]);
+  await settle(accountId);
+  eq(contactsOf(accountId, [P]).length, 0, "no contact created from the address book alone");
+  A().emit("message", env({ routingJid: "88880000@lid", canonicalJid: "88880000@lid", body: "hello, first time" }));
+  await settle(accountId);
+  const c = contactsOf(accountId, [P, "88880000@lid"]);
+  eq(c.length, 1, "one contact");
+  eq(c[0]!.jid, P, "the @lid resolved to the phone from the directory");
+  eq(c[0]!.saved_name, "New Supplier", "named on arrival");
+});
+
+await test("resume: stored pairings merge old duplicates; contact resync requested once, only without an address book", async () => {
+  const id = seedAccount("disconnected", true);
+  const P = "60199990000@s.whatsapp.net", L = "99990000@lid";
+  const push = (t: string, r: Row) => (db[t]!.push(r), r);
+  const pc = push("wa_contacts", { id: crypto.randomUUID(), account_id: id, jid: P, routing_jid: L, name: "Shazana", saved_name: null, phone_number: "60199990000" });
+  const lc = push("wa_contacts", { id: crypto.randomUUID(), account_id: id, jid: L, routing_jid: L, name: null, saved_name: null, phone_number: null });
+  const pv = push("wa_conversations", { id: crypto.randomUUID(), account_id: id, contact_id: pc.id, unread_count: 2, last_message_at: new Date(1000).toISOString(), last_message_preview: "old" });
+  const lv = push("wa_conversations", { id: crypto.randomUUID(), account_id: id, contact_id: lc.id, unread_count: 0, last_message_at: new Date(5000).toISOString(), last_message_preview: "newest" });
+  for (const [conv, at, body] of [[pv, 1000, "old"], [lv, 5000, "newest"]] as const) {
+    push("wa_messages", { id: crypto.randomUUID(), conversation_id: conv.id, account_id: id, wa_message_id: crypto.randomUUID(), direction: "out", type: "text", body, created_at: new Date(at).toISOString() });
+  }
+  const made: FakeSession[] = [];
+  const boot = new SessionManager({ sessionsDir, createSession: (i, d) => (made.push(new FakeSession(i, d)), made.at(-1)!) });
+  await boot.resume(id);
+  made[0]!.connect("60100000001");
+  await settle(id);
+  const c = contactsOf(id, [P, L]);
+  eq(c.length, 1, "duplicate merged on resume");
+  const conv = rows("wa_conversations", (r) => r.contact_id === c[0]!.id)[0]!;
+  eq(msgsIn(conv.id).length, 2, "both messages");
+  eq(conv.last_message_preview, "newest", "latest across both");
+  eq(made[0]!.resyncs, 1, "no address book yet → asked WhatsApp for the contact list");
+  made[0]!.connect("60100000001"); // a reconnect
+  await settle(id);
+  eq(made[0]!.resyncs, 1, "not repeated on reconnect");
+
+  const named = seedAccount("disconnected", true);
+  db.wa_directory!.push({ account_id: named, jid: "60100000009@s.whatsapp.net", pn_jid: "60100000009@s.whatsapp.net", saved_name: "Someone", push_name: null });
+  await boot.resume(named);
+  made.at(-1)!.connect("60100000002");
+  await settle(named);
+  eq(made.at(-1)!.resyncs, 0, "address book already stored → no resync");
+});
+
+await test("directory table missing (migration 003 not run) → live + history messages still saved", async () => {
+  const saved = SCHEMA.wa_directory;
+  delete SCHEMA.wa_directory;
+  try {
+    const L = "12121212@lid";
+    A().emit("message", env({ routingJid: L, canonicalJid: "60121212121@s.whatsapp.net", body: "live, no directory" }));
+    A().emit("history", [env({ routingJid: L, direction: "out", body: "history, no directory", isHistory: true, timestamp: new Date(Date.now() - 86400_000) })]);
+    await settle(accountId);
+    eq(rows("wa_messages", (r) => r.body === "live, no directory").length, 1, "live saved");
+    eq(rows("wa_messages", (r) => r.body === "history, no directory").length, 1, "history saved");
+  } finally {
+    SCHEMA.wa_directory = saved!;
+  }
+});
+
+await test("parse: contact / history-chat records → identities (device suffix dropped, groups ignored)", async () => {
+  const a = identityOfContact({ id: "6011:7@s.whatsapp.net", lid: "123@lid", name: "Joo Hing", notify: "joohing" })!;
+  eq(a.pn, "6011@s.whatsapp.net", "device suffix dropped");
+  eq(a.lid, "123@lid", "lid");
+  eq(a.savedName, "Joo Hing", "address-book name");
+  eq(a.pushName, "joohing", "push name");
+  const b = identityOfContact({ id: "456@lid", jid: "6012@s.whatsapp.net" })!;
+  eq(`${b.pn} ${b.lid}`, "6012@s.whatsapp.net 456@lid", "id may be the lid");
+  const c = identityOfChat({ id: "789@lid", pnJid: "6013@s.whatsapp.net", name: "Shazana - Nu'man" })!;
+  eq(`${c.pn} ${c.lid} ${c.savedName}`, "6013@s.whatsapp.net 789@lid Shazana - Nu'man", "lid chat with pnJid");
+  eq(identityOfChat({ id: "1203-99@g.us", name: "Family" }), null, "group ignored");
+  eq(identityOfContact({ id: "status@broadcast" }), null, "not a person");
 });
 
 // ─── Summary ───

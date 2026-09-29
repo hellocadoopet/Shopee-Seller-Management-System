@@ -6,14 +6,15 @@
  */
 import { supabase } from "../../lib/supabase.js";
 import type { WaContactRow, WaConversationRow } from "../../adapters/whatsapp/contract.js";
-import { check, chunks } from "./db.js";
+import { check, chunks, selectIn } from "./db.js";
+import { learnNow, namesFor, resolvePhones } from "./directory.js";
+import { logger } from "../logger.js";
 import { isDirectChat, jidToPhone } from "./parse.js";
 import { messageColumns, previewOf } from "./persistence.js";
 import { serialize } from "./queue.js";
 import type { Envelope } from "./session.js";
 
 const INSERT_CHUNK = 500;
-const FILTER_CHUNK = 100; // values per `in (...)` filter, to stay well under URL limits
 
 export interface HistoryResult {
   received: number;
@@ -27,15 +28,6 @@ export function persistHistory(accountId: string, batch: Envelope[]): Promise<Hi
 
 const unique = <T>(xs: T[]) => [...new Set(xs)];
 
-async function selectIn<R>(table: string, accountId: string, column: string, values: string[], columns = "*"): Promise<R[]> {
-  const out: R[] = [];
-  for (const part of chunks(unique(values), FILTER_CHUNK)) {
-    const rows = check(await supabase.from(table).select(columns).eq("account_id", accountId).in(column, part));
-    out.push(...((rows ?? []) as R[]));
-  }
-  return out;
-}
-
 async function persistNow(accountId: string, batch: Envelope[]): Promise<HistoryResult> {
   const byId = new Map<string, Envelope>();
   for (const e of batch) if (isDirectChat(e.routingJid)) byId.set(e.waMessageId, e);
@@ -43,8 +35,17 @@ async function persistNow(accountId: string, batch: Envelope[]): Promise<History
   if (!envs.length) return { received: batch.length, inserted: 0, conversations: 0 };
 
   // ── Contacts ── keyed like the live path: phone jid when known, so "@lid" chats merge.
+  // Pairings this batch reveals (senderPn) go into the directory first — which also merges any
+  // "@lid" contact an earlier batch created — then every "@lid" is looked up there, so our own
+  // messages to an "@lid" (which never name the phone) join the person's phone contact.
   const lidToPhone = new Map<string, string>();
   for (const e of envs) if (e.routingJid.endsWith("@lid") && e.canonicalJid !== e.routingJid) lidToPhone.set(e.routingJid, e.canonicalJid);
+  // Never lets a directory failure (e.g. migration 003 not run) stop the batch being saved.
+  const optional = <T>(p: Promise<T>, fallback: T) =>
+    p.catch((err) => (logger.warn({ accountId, err: String(err) }, "directory unavailable — history saved without it"), fallback));
+  await optional(learnNow(accountId, [...lidToPhone].map(([lid, pn]) => ({ lid, pn, savedName: null, pushName: null }))), undefined);
+  const lids = unique(envs.map((e) => e.canonicalJid).filter((j) => j.endsWith("@lid")));
+  for (const [lid, pn] of await optional(resolvePhones(accountId, lids), new Map<string, string>())) lidToPhone.set(lid, pn);
   const phoneToLid = new Map([...lidToPhone].map(([lid, phone]) => [phone, lid]));
   const keyOf = (e: Envelope) => lidToPhone.get(e.canonicalJid) ?? e.canonicalJid;
 
@@ -80,19 +81,21 @@ async function persistNow(accountId: string, batch: Envelope[]): Promise<History
     }
   }
 
-  const newRows = keys
-    .filter((k) => !contactOf.has(k))
-    .map((k) => {
-      const msgs = [...groups.get(k)!].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-      const latestIn = msgs.find((m) => m.direction === "in");
-      return {
-        account_id: accountId,
-        jid: k,
-        routing_jid: (latestIn ?? msgs[0]!).routingJid,
-        name: msgs.find((m) => m.pushName)?.pushName ?? null,
-        phone_number: jidToPhone(k),
-      };
-    });
+  const newKeys = keys.filter((k) => !contactOf.has(k));
+  const dirNames = await optional(namesFor(accountId, [...newKeys, ...newKeys.map((k) => phoneToLid.get(k)).filter((x): x is string => !!x)]), new Map());
+  const newRows = newKeys.map((k) => {
+    const msgs = [...groups.get(k)!].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+    const latestIn = msgs.find((m) => m.direction === "in");
+    const dir = dirNames.get(k);
+    return {
+      account_id: accountId,
+      jid: k,
+      routing_jid: (latestIn ?? msgs[0]!).routingJid,
+      name: msgs.find((m) => m.pushName)?.pushName ?? dir?.push ?? null,
+      saved_name: dir?.saved ?? null,
+      phone_number: jidToPhone(k),
+    };
+  });
   for (const part of chunks(newRows, INSERT_CHUNK)) {
     const rows = check(
       await supabase.from("wa_contacts").upsert(part, { onConflict: "account_id,jid", ignoreDuplicates: true }).select("*"),
@@ -154,6 +157,18 @@ async function persistNow(accountId: string, batch: Envelope[]): Promise<History
         .update({ last_message_at: e.timestamp.toISOString(), last_message_preview: previewOf(e) })
         .eq("id", id),
     );
+  }
+
+  // ── Routing ── replies go where their newest incoming message came from. A history batch only
+  // moves it forward: its newest inbound must be newer than anything the conversation had before.
+  for (const k of keys) {
+    const contact = contactOf.get(k);
+    const newestIn = groups.get(k)!.filter((e) => e.direction === "in").sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())[0];
+    if (!contact || !newestIn || newestIn.routingJid === contact.routing_jid) continue;
+    const conv = convOf.get(contact.id);
+    const before = conv ? stored.get(conv.id) : null;
+    if (before && newestIn.timestamp.getTime() < Date.parse(before)) continue;
+    check(await supabase.from("wa_contacts").update({ routing_jid: newestIn.routingJid }).eq("id", contact.id));
   }
 
   return { received: batch.length, inserted: insertedIds.size, conversations: newest.size };

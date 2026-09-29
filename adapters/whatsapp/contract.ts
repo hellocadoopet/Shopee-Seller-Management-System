@@ -43,8 +43,18 @@ export interface WaContactRow {
   account_id: string;
   jid: string;
   routing_jid: string | null;
-  name: string | null;
+  name: string | null; // their self-set WhatsApp (push) name
+  saved_name: string | null; // name in the linked phone's address book — shown first
   phone_number: string | null;
+}
+
+/** db/migrations/003: every id WhatsApp has shown us for a person, with the phone behind an "@lid". */
+export interface WaDirectoryRow {
+  account_id: string;
+  jid: string;
+  pn_jid: string | null;
+  saved_name: string | null;
+  push_name: string | null;
 }
 
 export interface WaConversationRow {

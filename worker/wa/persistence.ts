@@ -6,6 +6,8 @@ import { supabase } from "../../lib/supabase.js";
 import type { WaContactRow, WaConversationRow, WaMessageRow } from "../../adapters/whatsapp/contract.js";
 import { isDirectChat, jidToPhone } from "./parse.js";
 import { check } from "./db.js";
+import { learnNow, namesFor, resolvePhones } from "./directory.js";
+import { logger } from "../logger.js";
 import { serialize } from "./queue.js";
 import type { Envelope, ReceiptStatus } from "./session.js";
 
@@ -60,8 +62,14 @@ export function applyReceipt(accountId: string, waMessageId: string, status: Rec
   });
 }
 
-async function persistNow(accountId: string, env: Envelope): Promise<Persisted | null> {
-  if (!isDirectChat(env.routingJid)) return null;
+async function persistNow(accountId: string, incoming: Envelope): Promise<Persisted | null> {
+  if (!isDirectChat(incoming.routingJid)) return null;
+  // The directory only improves which contact a message joins — it must never stop a message
+  // being saved (e.g. its table missing because migration 003 hasn't run yet).
+  const env = await withKnownPhone(accountId, incoming).catch((err) => {
+    logger.warn({ accountId, err: String(err) }, "directory lookup failed — saving without it");
+    return incoming;
+  });
 
   // Cheap pre-check so a redelivered message doesn't touch the contact (e.g. its routing_jid).
   const seen = await findMessage(accountId, env.waMessageId);
@@ -96,6 +104,23 @@ async function persistNow(accountId: string, env: Envelope): Promise<Persisted |
     check(await supabase.from("wa_accounts").update({ last_seen_at: new Date().toISOString() }).eq("id", accountId));
   }
   return { messageId: row.id, conversationId: conversation.id, inserted: true };
+}
+
+/**
+ * Key the message by the person's phone whenever it's known. An incoming "@lid" message that names
+ * its sender's phone teaches the directory the pairing (merging an existing "@lid" contact); anything
+ * else addressed to an "@lid" — notably our own messages, which never carry the phone — looks it up.
+ */
+async function withKnownPhone(accountId: string, env: Envelope): Promise<Envelope> {
+  const lid = env.routingJid.endsWith("@lid") ? env.routingJid : null;
+  if (!lid) return env;
+  if (env.canonicalJid.endsWith("@s.whatsapp.net")) {
+    const known = (await resolvePhones(accountId, [lid])).get(lid);
+    if (known !== env.canonicalJid) await learnNow(accountId, [{ lid, pn: env.canonicalJid, savedName: null, pushName: null }]);
+    return env;
+  }
+  const pn = (await resolvePhones(accountId, [lid])).get(lid);
+  return pn ? { ...env, canonicalJid: pn } : env;
 }
 
 async function findMessage(accountId: string, waMessageId: string) {
@@ -136,6 +161,7 @@ async function upsertContact(accountId: string, env: Envelope): Promise<WaContac
   }
 
   if (!contact) {
+    const dir = (await namesFor(accountId, [env.canonicalJid, env.routingJid]).catch(() => new Map<string, never>())).get(env.canonicalJid);
     return check(
       await supabase
         .from("wa_contacts")
@@ -143,7 +169,8 @@ async function upsertContact(accountId: string, env: Envelope): Promise<WaContac
           account_id: accountId,
           jid: env.canonicalJid,
           routing_jid: env.routingJid,
-          name: env.pushName,
+          name: env.pushName ?? dir?.push ?? null,
+          saved_name: dir?.saved ?? null,
           phone_number: jidToPhone(env.canonicalJid),
         })
         .select("*")
@@ -207,7 +234,7 @@ export function messageColumns(env: Envelope) {
   };
 }
 
-export function previewOf(env: Envelope): string {
+export function previewOf(env: { body: string | null; type: string }): string {
   const text = env.body?.trim() || (env.type === "text" ? "" : `[${env.type}]`);
   return text.length > 80 ? `${text.slice(0, 80)}…` : text;
 }

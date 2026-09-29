@@ -31,6 +31,19 @@ export interface Envelope {
   isHistory: boolean;
 }
 
+/**
+ * Who someone is, as WhatsApp tells us outside of messages: the phone behind a hidden "@lid" id,
+ * and their names. Any field may be missing.
+ */
+export interface Identity {
+  lid: string | null;
+  pn: string | null;
+  /** The linked phone's address-book name for them. */
+  savedName: string | null;
+  /** The name they set on WhatsApp themselves. */
+  pushName: string | null;
+}
+
 export interface SessionEvents {
   /** A new pairing QR (raw string; the manager renders it). */
   qr: [qr: string];
@@ -43,6 +56,8 @@ export interface SessionEvents {
   /** One messaging-history.set batch (can be thousands of messages); persisted in bulk. */
   history: [envelopes: Envelope[]];
   receipt: [info: { waMessageId: string; status: ReceiptStatus }];
+  /** Identities from history sync, contact sync or a phone-number share. Emitted before the matching history batch. */
+  directory: [identities: Identity[]];
 }
 
 export interface WaSession extends Pick<EventEmitter<SessionEvents>, "on" | "removeAllListeners"> {
@@ -59,6 +74,8 @@ export interface WaSession extends Pick<EventEmitter<SessionEvents>, "on" | "rem
   stop(): Promise<void>;
   /** Send a text; resolves with WhatsApp's message id. */
   sendText(jid: string, text: string): Promise<string>;
+  /** Ask WhatsApp to re-send the whole contact list (names + "@lid" ids) — emits `directory`. */
+  resyncContacts(): Promise<void>;
 }
 
 export type SessionFactory = (accountId: string, sessionDir: string) => WaSession;
