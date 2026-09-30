@@ -1,7 +1,12 @@
 import { useState } from "react";
+import { Package } from "lucide-react";
 import { useShopParam } from "../lib/shops";
-import { useFetch, type ShopList, type Tagged } from "../lib/useFetch";
+import { useCapability } from "../lib/capabilities";
+import { errorText, useFetch, type ShopList, type Tagged } from "../lib/useFetch";
+import { formatMoney, statusTone } from "../lib/format";
 import { ShopBadge, ShopErrors, useMultiShop } from "../components/Shop";
+import { PageHeader, RefreshButton } from "../components/Page";
+import { EmptyState, ErrorNotice, Loading, NeedsCapability } from "../components/States";
 
 interface Item {
   id: string;
@@ -20,13 +25,17 @@ const key = (it: Row) => `${it.shop_id}:${it.id}`;
 export default function ProductsPage() {
   const [shop] = useShopParam();
   const multi = useMultiShop();
-  const { data, error, loading, reload } = useFetch<ShopList<Item>>(`/api/products?shop=${shop}`);
+  const cap = useCapability("catalog");
+  const { data, error, loading, reload } = useFetch<ShopList<Item>>(
+    cap.ready && cap.supported ? `/api/products?shop=${shop}` : null,
+  );
 
   const [query, setQuery] = useState("");
   const [lowOnly, setLowOnly] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const [saving, setSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
   const [saved, setSaved] = useState<Record<string, number>>({}); // optimistic prices after a successful save
 
   const items = (data?.items ?? [])
@@ -37,10 +46,11 @@ export default function ProductsPage() {
   async function savePrice(it: Row) {
     const newPrice = Number(editValue);
     if (!newPrice || newPrice <= 0) {
-      alert("Enter a valid price greater than 0");
+      setEditError("Enter a price greater than 0");
       return;
     }
     setSaving(true);
+    setEditError(null);
     try {
       const r = await fetch("/api/products", {
         method: "POST",
@@ -52,27 +62,44 @@ export default function ProductsPage() {
       setSaved((s) => ({ ...s, [key(it)]: newPrice }));
       setEditing(null);
     } catch (e) {
-      alert(`Failed to update price on ${it.shop_name}: ${String(e)}`);
+      setEditError(`Couldn't update the price: ${errorText(e)}`);
     } finally {
       setSaving(false);
     }
   }
 
+  const startEdit = (it: Row) => {
+    setEditing(key(it));
+    setEditValue(it.price != null ? String(it.price) : "");
+    setEditError(null);
+  };
+  const cancelEdit = () => {
+    setEditing(null);
+    setEditError(null);
+  };
+
+  const header = (
+    <PageHeader
+      title="Products"
+      actions={cap.supported && <RefreshButton onClick={reload} loading={loading && !!data} />}
+    />
+  );
+  if (!cap.ready) return <div>{header}<Loading /></div>;
+  if (!cap.supported) return <div>{header}<NeedsCapability what="Products" providers={cap.providers} /></div>;
+
+  const cols = multi ? 7 : 6;
+
   return (
     <div>
-      <div className="flex justify-between items-center mb-4">
-        <h1 className="text-2xl font-semibold">Products</h1>
-        <button onClick={reload} className="px-3 py-1.5 text-sm rounded-md border border-gray-200 hover:bg-gray-50">
-          Refresh
-        </button>
-      </div>
+      {header}
 
-      <div className="flex flex-wrap gap-3 mb-4">
+      <div className="flex flex-wrap items-center gap-3 mb-4">
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search name or SKU…"
-          className="border border-gray-200 rounded-md px-3 py-1.5 text-sm w-64"
+          aria-label="Search products"
+          className="input w-full sm:w-64"
         />
         <label className="inline-flex items-center gap-2 text-sm text-gray-700">
           <input type="checkbox" checked={lowOnly} onChange={(e) => setLowOnly(e.target.checked)} />
@@ -81,108 +108,126 @@ export default function ProductsPage() {
       </div>
 
       <ShopErrors errors={data?.errors} />
-      {loading && <p className="text-gray-500">Loading…</p>}
-      {error && <p className="text-red-600 text-sm mb-4">Error: {error}</p>}
+      {error && <ErrorNotice error={error} onRetry={reload} />}
 
-      {data && (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 text-gray-600">
+      {loading && !data ? (
+        <Loading />
+      ) : data && !data.items.length ? (
+        <EmptyState icon={Package} title="No products" body="The shops in view have no listings." />
+      ) : data ? (
+        <div className="panel relative overflow-x-auto">
+          <table className="w-full text-sm min-w-[640px]">
+            <thead className="bg-gray-50">
               <tr>
-                {multi && <th className="text-left px-4 py-3">Shop</th>}
-                <th className="text-left px-4 py-3">Item</th>
-                <th className="text-left px-4 py-3">SKU</th>
-                <th className="text-right px-4 py-3">Price (RM)</th>
-                <th className="text-right px-4 py-3">Stock</th>
-                <th className="text-left px-4 py-3">Status</th>
-                <th className="text-right px-4 py-3"></th>
+                {multi && <th className="th">Shop</th>}
+                <th className="th">Item</th>
+                <th className="th">SKU</th>
+                <th className="th text-right">Price</th>
+                <th className="th text-right">Stock</th>
+                <th className="th">Status</th>
+                <th className="th text-right">
+                  <span className="sr-only">Actions</span>
+                </th>
               </tr>
             </thead>
             <tbody>
-              {items.map((it) => (
-                <tr key={key(it)} className="border-t border-gray-100">
-                  {multi && (
-                    <td className="px-4 py-3">
-                      <ShopBadge shopId={it.shop_id} name={it.shop_name} />
+              {items.map((it) => {
+                const tone = statusTone(it.status);
+                const isEditing = editing === key(it);
+                return (
+                  <tr key={key(it)} className="border-t border-gray-100 align-top">
+                    {multi && (
+                      <td className="td">
+                        <ShopBadge shopId={it.shop_id} name={it.shop_name} />
+                      </td>
+                    )}
+                    <td className="td font-medium">{it.name}</td>
+                    <td className="td text-gray-500">{it.sku || "—"}</td>
+                    <td className="td text-right tabular-nums whitespace-nowrap">
+                      {isEditing ? (
+                        <>
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            step="0.01"
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") void savePrice(it);
+                              if (e.key === "Escape") cancelEdit();
+                            }}
+                            aria-label={`New price for ${it.name}`}
+                            className="input w-28 px-2 py-1 text-right"
+                            autoFocus
+                          />
+                          {editError && (
+                            <p role="alert" className="text-xs text-red-700 mt-1 whitespace-normal text-left max-w-[12rem] ml-auto">
+                              {editError}
+                            </p>
+                          )}
+                        </>
+                      ) : it.price != null ? (
+                        formatMoney(it.price)
+                      ) : it.has_variants ? (
+                        <span className="text-gray-500" title="Has variants — edit on the platform for now">
+                          variants
+                        </span>
+                      ) : (
+                        "—"
+                      )}
                     </td>
-                  )}
-                  <td className="px-4 py-3 font-medium">{it.name}</td>
-                  <td className="px-4 py-3 text-gray-500">{it.sku || "—"}</td>
-                  <td className="px-4 py-3 text-right">
-                    {editing === key(it) ? (
-                      <input
-                        type="number"
-                        value={editValue}
-                        onChange={(e) => setEditValue(e.target.value)}
-                        className="w-24 border border-gray-300 rounded px-2 py-1 text-right"
-                        autoFocus
-                      />
-                    ) : it.price != null ? (
-                      it.price.toFixed(2)
-                    ) : it.has_variants ? (
-                      <span className="text-gray-400" title="Has variants — edit on the platform for now">
-                        variants
-                      </span>
-                    ) : (
-                      "—"
-                    )}
-                  </td>
-                  <td
-                    className={`px-4 py-3 text-right ${
-                      it.stock === 0 ? "text-red-600 font-semibold" : it.stock != null && it.stock <= LOW_STOCK ? "text-amber-600 font-semibold" : ""
-                    }`}
-                  >
-                    {it.stock ?? "—"}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className="px-2 py-0.5 rounded-full bg-green-100 text-green-700 text-xs">{it.status}</span>
-                  </td>
-                  <td className="px-4 py-3 text-right whitespace-nowrap">
-                    {editing === key(it) ? (
-                      <>
-                        <button
-                          onClick={() => savePrice(it)}
-                          disabled={saving}
-                          className="text-shopee hover:underline mr-3 disabled:opacity-50"
-                        >
-                          {saving ? "…" : "Save"}
-                        </button>
-                        <button onClick={() => setEditing(null)} className="text-gray-400 hover:underline">
-                          Cancel
-                        </button>
-                      </>
-                    ) : (
-                      !it.has_variants && (
-                        <button
-                          onClick={() => {
-                            setEditing(key(it));
-                            setEditValue(it.price != null ? String(it.price) : "");
-                          }}
-                          className="text-shopee hover:underline"
-                        >
-                          Edit price
-                        </button>
-                      )
-                    )}
-                  </td>
-                </tr>
-              ))}
+                    <td
+                      className={`td text-right tabular-nums ${
+                        it.stock === 0
+                          ? "text-red-700 font-semibold"
+                          : it.stock != null && it.stock <= LOW_STOCK
+                            ? "text-amber-700 font-semibold"
+                            : ""
+                      }`}
+                    >
+                      {it.stock ?? "—"}
+                    </td>
+                    <td className="td">
+                      <span className={`px-2 py-0.5 rounded-full text-xs whitespace-nowrap ${tone.className}`}>{tone.label}</span>
+                    </td>
+                    <td className="td text-right whitespace-nowrap">
+                      {isEditing ? (
+                        <>
+                          <button type="button" onClick={() => void savePrice(it)} disabled={saving} className="link mr-3 disabled:opacity-50">
+                            {saving ? "Saving…" : "Save"}
+                          </button>
+                          <button type="button" onClick={cancelEdit} className="text-gray-500 hover:underline">
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        !it.has_variants && (
+                          <button type="button" onClick={() => startEdit(it)} className="link">
+                            Edit price
+                          </button>
+                        )
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
               {!items.length && (
                 <tr>
-                  <td colSpan={multi ? 7 : 6} className="px-4 py-8 text-center text-gray-400">
-                    {query || lowOnly ? "No products match." : "No products."}
+                  <td colSpan={cols} className="td text-center text-gray-500 py-8">
+                    No products match your filters.
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
-      )}
+      ) : null}
 
-      <p className="text-xs text-gray-400 mt-4">
-        {items.length} shown{data ? ` of ${data.items.length}` : ""}. Variant products show "variants" — per-variant
-        editing comes later.
-      </p>
+      {data && data.items.length > 0 && (
+        <p className="text-xs text-gray-500 mt-4">
+          {items.length} shown of {data.items.length}. Variant products show "variants" — per-variant editing comes later.
+        </p>
+      )}
     </div>
   );
 }

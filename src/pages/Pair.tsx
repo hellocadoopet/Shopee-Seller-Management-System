@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
+import { ArrowLeft } from "lucide-react";
+import { errorText } from "../lib/useFetch";
 
 interface PairingStatus {
   state: "starting" | "qr" | "connected" | "failed";
@@ -34,7 +36,7 @@ export default function PairPage() {
       setPairingId(d.pairing_id);
     } catch (e) {
       setStatus(null);
-      setError(String(e));
+      setError(errorText(e));
     }
   }
 
@@ -58,7 +60,7 @@ export default function PairPage() {
           return;
         }
       } catch (e) {
-        if (!stopped) setError(String(e));
+        if (!stopped) setError(errorText(e));
       }
       if (!stopped) timer = window.setTimeout(poll, POLL_MS);
     };
@@ -81,7 +83,7 @@ export default function PairPage() {
 
   return (
     <main className="min-h-screen flex items-center justify-center px-4">
-      <div className="max-w-md w-full bg-white rounded-2xl border border-gray-200 p-8 text-center">
+      <div className="max-w-md w-full bg-white rounded-xl border border-gray-200 p-6 sm:p-8 text-center">
         <h1 className="text-2xl font-semibold mb-2">Link a WhatsApp number</h1>
 
         {!pairingId || failed ? (
@@ -93,7 +95,8 @@ export default function PairPage() {
               value={label}
               onChange={(e) => setLabel(e.target.value)}
               placeholder="Name (optional), e.g. Cadoopet Sales"
-              className="w-full border border-gray-200 rounded-md px-3 py-2 text-sm mb-3"
+              aria-label="Name for this number"
+              className="input w-full py-2 mb-3"
             />
             <button
               onClick={() => {
@@ -101,7 +104,7 @@ export default function PairPage() {
                 start();
               }}
               disabled={status?.state === "starting"}
-              className="w-full py-3 rounded-lg bg-shopee text-white font-medium disabled:opacity-50"
+              className="btn-primary w-full py-3"
             >
               {status?.state === "starting" ? "Starting…" : failed ? "Try again" : "Show QR code"}
             </button>
@@ -112,21 +115,25 @@ export default function PairPage() {
               {status?.qr ? (
                 <img src={status.qr} alt="WhatsApp pairing QR code" className="w-64 h-64" />
               ) : (
-                <span className="text-sm text-gray-400">{status?.state === "connected" ? "Linked! Opening…" : "Preparing QR code…"}</span>
+                <span className="text-sm text-gray-500">{status?.state === "connected" ? "Linked! Opening…" : "Preparing QR code…"}</span>
               )}
             </div>
-            <ol className="text-sm text-gray-600 text-left space-y-1 mb-2">
-              <li>1. Open WhatsApp on the phone for this number</li>
-              <li>2. Settings → Linked devices → Link a device</li>
-              <li>3. Point the phone at this code</li>
+            <ol className="list-decimal pl-5 text-sm text-gray-600 text-left space-y-1 mb-2">
+              <li>Open WhatsApp on the phone for this number</li>
+              <li>Settings → Linked devices → Link a device</li>
+              <li>Point the phone at this code</li>
             </ol>
-            <p className="text-xs text-gray-400">The code refreshes on its own — keep this page open until it links.</p>
+            <p className="text-xs text-gray-500">The code refreshes on its own — keep this page open until it links.</p>
           </>
         )}
 
-        {error && <p className="mt-4 text-sm text-red-600 break-words text-left">Error: {error}</p>}
-        <Link to="/connect" className="block mt-6 text-sm text-gray-500 hover:underline">
-          ← Back
+        {error && (
+          <p role="alert" className="mt-4 text-sm text-red-700 break-words text-left">
+            {error}
+          </p>
+        )}
+        <Link to="/connect" className="inline-flex items-center gap-1 mt-6 text-sm text-gray-500 hover:underline">
+          <ArrowLeft size={14} aria-hidden /> Back
         </Link>
       </div>
     </main>

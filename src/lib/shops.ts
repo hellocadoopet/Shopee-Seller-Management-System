@@ -27,11 +27,20 @@ function loadShops(): Promise<Shop[]> {
 }
 
 export function useShops(): Shop[] {
-  const [shops, setShops] = useState<Shop[]>([]);
+  return useShopsState().shops;
+}
+
+/** Like useShops, plus `ready` — `[]` while loading is otherwise indistinguishable from "no shops". */
+export function useShopsState(): { shops: Shop[]; ready: boolean } {
+  const [state, setState] = useState<{ shops: Shop[]; ready: boolean }>({ shops: [], ready: false });
   useEffect(() => {
-    loadShops().then(setShops);
+    let live = true;
+    loadShops().then((shops) => live && setState({ shops, ready: true }));
+    return () => {
+      live = false;
+    };
   }, []);
-  return shops;
+  return state;
 }
 
 export function shopColor(shops: Shop[], shopId: string): string {

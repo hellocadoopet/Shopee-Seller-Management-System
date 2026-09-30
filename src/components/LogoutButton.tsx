@@ -5,7 +5,7 @@ export default function LogoutButton() {
     window.location.href = "/login";
   }
   return (
-    <button onClick={logout} className="text-xs text-gray-400 hover:text-shopee">
+    <button onClick={logout} className="text-xs text-gray-500 hover:text-shopee-700">
       Log out
     </button>
   );
