@@ -1,4 +1,4 @@
-# Dashboard API image (Railway). Build from the REPO ROOT — the API imports ../lib, ../adapters and
+# Dashboard API image (Railway api service, auto-deploys from master). Build from the REPO ROOT — the API
 # ../config:   docker build -f server/Dockerfile .
 FROM node:22-slim
 
