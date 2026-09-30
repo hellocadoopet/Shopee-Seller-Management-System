@@ -1,6 +1,11 @@
+import { Megaphone } from "lucide-react";
 import { useShopParam } from "../lib/shops";
+import { useCapability } from "../lib/capabilities";
 import { useFetch, type ShopList } from "../lib/useFetch";
+import { formatMoney, formatNumber, formatPercent, formatRatio } from "../lib/format";
 import { ShopBadge, ShopErrors, useMultiShop } from "../components/Shop";
+import { PageHeader, RefreshButton } from "../components/Page";
+import { EmptyState, ErrorNotice, Loading, NeedsCapability } from "../components/States";
 
 interface Report {
   campaign_id: string;
@@ -16,53 +21,69 @@ interface Report {
 export default function AdsPage() {
   const [shop] = useShopParam();
   const multi = useMultiShop();
-  const { data, error, loading } = useFetch<ShopList<Report>>(`/api/ads?shop=${shop}`);
+  const cap = useCapability("ads");
+  const { data, error, loading, reload } = useFetch<ShopList<Report>>(
+    cap.ready && cap.supported ? `/api/ads?shop=${shop}` : null,
+  );
   const reports = data?.items ?? [];
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold mb-6">Ads — last 30 days</h1>
-      {loading && <p className="text-gray-500">Loading…</p>}
-      <ShopErrors errors={data?.errors} />
-      {error && <p className="text-red-600 text-sm">{error}</p>}
-
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="bg-gray-50 text-gray-600">
-            <tr>
-              {multi && <th className="text-left px-4 py-3">Shop</th>}
-              <th className="text-left px-4 py-3">Campaign</th>
-              <th className="text-right px-4 py-3">Impr.</th>
-              <th className="text-right px-4 py-3">Clicks</th>
-              <th className="text-right px-4 py-3">CTR</th>
-              <th className="text-right px-4 py-3">Spend</th>
-              <th className="text-right px-4 py-3">GMV</th>
-              <th className="text-right px-4 py-3">ROAS</th>
-            </tr>
-          </thead>
-          <tbody>
-            {reports.map((r) => (
-              <tr key={`${r.shop_id}:${r.campaign_id}`} className="border-t border-gray-100">
-                {multi && (
-                  <td className="px-4 py-3">
-                    <ShopBadge shopId={r.shop_id} name={r.shop_name} />
-                  </td>
-                )}
-                <td className="px-4 py-3 font-medium">{r.campaign_name}</td>
-                <td className="px-4 py-3 text-right">{r.impressions ?? "—"}</td>
-                <td className="px-4 py-3 text-right">{r.clicks ?? "—"}</td>
-                <td className="px-4 py-3 text-right">{r.ctr?.toFixed(2)}%</td>
-                <td className="px-4 py-3 text-right">RM {r.spend?.toFixed(2)}</td>
-                <td className="px-4 py-3 text-right">RM {r.gmv?.toFixed(2)}</td>
-                <td className="px-4 py-3 text-right font-semibold">{r.roas?.toFixed(2)}x</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="text-xs text-gray-400 mt-4">
-        Read-only. Edit campaigns on the platform — its API doesn't expose ad editing.
-      </p>
+      <PageHeader
+        title="Ads"
+        subtitle="Last 30 days · read-only (edit campaigns on the platform)"
+        actions={cap.supported && <RefreshButton onClick={reload} loading={loading && !!data} />}
+      />
+      {!cap.ready ? (
+        <Loading />
+      ) : !cap.supported ? (
+        <NeedsCapability what="Ads" providers={cap.providers} />
+      ) : (
+        <>
+          <ShopErrors errors={data?.errors} />
+          {error && <ErrorNotice error={error} onRetry={reload} />}
+          {loading && !data ? (
+            <Loading />
+          ) : data && !reports.length ? (
+            <EmptyState icon={Megaphone} title="No ad campaigns in the last 30 days" />
+          ) : data ? (
+            <div className="panel relative overflow-x-auto">
+              <table className="w-full text-sm min-w-[720px]">
+                <thead className="bg-gray-50">
+                  <tr>
+                    {multi && <th className="th">Shop</th>}
+                    <th className="th">Campaign</th>
+                    <th className="th text-right">Impressions</th>
+                    <th className="th text-right">Clicks</th>
+                    <th className="th text-right">CTR</th>
+                    <th className="th text-right">Spend</th>
+                    <th className="th text-right">GMV</th>
+                    <th className="th text-right">ROAS</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {reports.map((r) => (
+                    <tr key={`${r.shop_id}:${r.campaign_id}`} className="border-t border-gray-100">
+                      {multi && (
+                        <td className="td">
+                          <ShopBadge shopId={r.shop_id} name={r.shop_name} />
+                        </td>
+                      )}
+                      <td className="td font-medium">{r.campaign_name}</td>
+                      <td className="td text-right tabular-nums">{formatNumber(r.impressions)}</td>
+                      <td className="td text-right tabular-nums">{formatNumber(r.clicks)}</td>
+                      <td className="td text-right tabular-nums">{formatPercent(r.ctr)}</td>
+                      <td className="td text-right tabular-nums whitespace-nowrap">{formatMoney(r.spend)}</td>
+                      <td className="td text-right tabular-nums whitespace-nowrap">{formatMoney(r.gmv)}</td>
+                      <td className="td text-right tabular-nums font-semibold">{formatRatio(r.roas)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
