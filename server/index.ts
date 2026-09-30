@@ -1,4 +1,5 @@
-// API server: Railway in production (railway injects PORT), :8787 locally where Vite proxies /api here.
+// API server: Railway in production behind the Vercel /api rewrite (Railway injects PORT); :8787 locally,
+// where Vite proxies /api here.
 import { serve } from "@hono/node-server";
 import { app } from "./app.js";
 
