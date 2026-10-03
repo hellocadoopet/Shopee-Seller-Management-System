@@ -143,12 +143,30 @@ function pairingFor(c: Context, platform: string) {
   return adapter.pairing;
 }
 
+/** Body `{ label?, shop_id? }` — `shop_id` re-links that (logged-out) shop instead of adding a new one. */
 app.post("/:platform/pairings", async (c) => {
-  const pairing = pairingFor(c, c.req.param("platform"));
+  const platform = c.req.param("platform");
+  const pairing = pairingFor(c, platform);
   if (pairing instanceof Response) return pairing;
-  const { label } = await c.req.json<{ label?: string }>().catch(() => ({ label: undefined }));
-  const { pairingId } = await pairing.start(label?.trim() || undefined);
+  const { label, shop_id } = await c.req.json<{ label?: string; shop_id?: string }>().catch(() => ({ label: undefined, shop_id: undefined }));
+  let relink: string | undefined;
+  if (shop_id) {
+    const shop = await findShop(shop_id);
+    if (!shop || shop.platform !== platform) return c.json({ error: "shop not found on this platform" }, 404);
+    relink = shop.external_id;
+  }
+  const { pairingId } = await pairing.start(label?.trim() || undefined, relink);
   return c.json({ pairing_id: pairingId });
+});
+
+/** Shops on this platform that lost their link and need a fresh QR scan (shown on the Connect page). */
+app.get("/:platform/relinkable", async (c) => {
+  const platform = c.req.param("platform");
+  const pairing = pairingFor(c, platform);
+  if (pairing instanceof Response) return pairing;
+  const ids = new Set(await pairing.relinkable());
+  const shops = (await listShops()).filter((s) => s.platform === platform && ids.has(s.external_id));
+  return c.json({ shops: shops.map(({ id, shop_name }) => ({ shop_id: id, shop_name })) });
 });
 
 app.get("/:platform/pairings/:id", async (c) => {

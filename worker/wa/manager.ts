@@ -9,7 +9,7 @@ import { join } from "node:path";
 import QRCode from "qrcode";
 import type { PairingStatusResponse, WaAccountStatus } from "../../adapters/whatsapp/contract.js";
 import { logger } from "../logger.js";
-import { accountExists, createPairedAccount, listResumableAccounts, setAccountStatus } from "./accounts.js";
+import { accountExists, createPairedAccount, getAccount, listResumableAccounts, setAccountStatus } from "./accounts.js";
 import { persistHistory } from "./history.js";
 import { backfillFromContacts, hasAddressBook, learn } from "./directory.js";
 import { attachMedia } from "./media.js";
@@ -27,6 +27,18 @@ interface Pairing {
   /** Account rows are being written; the pairing can no longer be cancelled or expire. */
   completing: boolean;
   timer: ReturnType<typeof setTimeout>;
+  /** Re-linking a logged-out number: only this phone may complete it (null = any, a fresh link). */
+  relinkPhone: string | null;
+}
+
+/** startPairing refused: maps to an HTTP status. */
+export class PairingError extends Error {
+  constructor(
+    readonly status: 404 | 409,
+    message: string,
+  ) {
+    super(message);
+  }
 }
 
 export type SendResult = { ok: true; messageId: string } | { ok: false; error: "not_found" | "not_connected" };
@@ -68,22 +80,39 @@ export class SessionManager {
 
   // ─── Pairing ───
 
-  /** Start pairing a new number. The pairing id becomes the account id (and its session folder). */
-  async startPairing(label?: string): Promise<string> {
-    const id = randomUUID();
+  /**
+   * Start pairing. The pairing id becomes the account id (and its session folder): a new uuid for a
+   * new number, or — to re-link a logged-out number — that number's existing account id, so its
+   * chats are kept and the new sync de-duplicates against them.
+   */
+  async startPairing(label?: string, relinkAccountId?: string): Promise<string> {
+    let relinkPhone: string | null = null;
+    if (relinkAccountId) {
+      const acc = await getAccount(relinkAccountId);
+      if (!acc) throw new PairingError(404, "unknown account");
+      if (acc.status !== "logged_out" || this.sessions.has(relinkAccountId)) throw new PairingError(409, "this number is still linked");
+      const previous = this.pairings.get(relinkAccountId);
+      if (previous?.completing) throw new PairingError(409, "this number is linking right now");
+      if (previous) await this.cancelPairing(relinkAccountId); // a second "re-link" click replaces the first QR
+      await rm(this.dirFor(relinkAccountId), { recursive: true, force: true }); // dead login from before
+      relinkPhone = acc.phoneNumber;
+      label = acc.shopName ?? label; // keep its name
+    }
+    const id = relinkAccountId ?? randomUUID();
     const pairing: Pairing = {
       id,
       label: label?.trim() || null,
       state: "starting",
       completing: false,
       timer: setTimeout(() => void this.expirePairing(id), this.pairingTtlMs),
+      relinkPhone,
     };
     pairing.timer.unref?.();
     this.pairings.set(id, pairing);
 
     const session = this.opts.createSession(id, this.dirFor(id));
     this.wire(session, pairing);
-    logger.info({ pairingId: id }, "pairing started");
+    logger.info({ pairingId: id, relink: !!relinkAccountId }, "pairing started");
     session.start().catch((err) => void this.failPairing(pairing, session, `start failed: ${String(err)}`));
     return id;
   }
@@ -152,6 +181,11 @@ export class SessionManager {
    * re-ran the insert on every reconnect and hit a primary-key conflict).
    */
   private async completePairing(p: Pairing, session: WaSession, phoneNumber: string | null) {
+    // Re-link scanned by another phone: refuse, or two numbers' chats would mix in one account.
+    if (p.relinkPhone && phoneNumber !== p.relinkPhone) {
+      await this.failPairing(p, session, `Scanned by +${phoneNumber ?? "an unknown number"}, not +${p.relinkPhone}. Scan with +${p.relinkPhone}'s phone, or link the other phone as a new number.`);
+      return;
+    }
     p.completing = true;
     try {
       const shopId = await createPairedAccount(p.id, p.label || phoneNumber || "WhatsApp", phoneNumber);

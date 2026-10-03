@@ -52,6 +52,13 @@ export async function markRead(accountId: string, conversationId: string) {
   if (error) throw new Error(`whatsapp mark read: ${error.message}`);
 }
 
+/** Numbers whose link is gone (device removed, login lost) — they need a fresh QR scan. */
+export async function loggedOutAccounts(): Promise<string[]> {
+  const { data, error } = await supabase.from("wa_accounts").select("id").eq("status", "logged_out");
+  if (error) throw new Error(`whatsapp accounts: ${error.message}`);
+  return (data ?? []).map((a) => a.id as string);
+}
+
 /** Where a reply must go: the jid their latest message came from, else the canonical one. */
 export async function replyTarget(accountId: string, conversationId: string): Promise<string | null> {
   const { data, error } = await supabase

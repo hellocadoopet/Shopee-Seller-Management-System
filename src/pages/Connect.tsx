@@ -10,6 +10,26 @@ interface Platform {
   missing_config: string[];
 }
 
+/** Numbers on a QR platform that lost their link — re-linking keeps their chats. */
+function Relink({ platform, label }: { platform: string; label: string }) {
+  const { data } = useFetch<{ shops: Array<{ shop_id: string; shop_name: string }> }>(`/api/${platform}/relinkable`);
+  if (!data?.shops.length) return null;
+  return (
+    <div className="space-y-2 text-left">
+      {data.shops.map((s) => (
+        <div key={s.shop_id} className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">
+          <p className="text-amber-900">
+            <b>{s.shop_name}</b> is no longer linked — {label} messages aren't arriving.
+          </p>
+          <Link to={`/connect/${platform}?relink=${s.shop_id}`} className="btn-primary w-full py-2 mt-2">
+            Re-link {s.shop_name} (keeps its chats)
+          </Link>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function ConnectPage() {
   useEffect(() => {
     document.title = "Connect a shop · Shopee Solo";
@@ -29,9 +49,12 @@ export default function ConnectPage() {
         <div className="space-y-3">
           {platforms.map((p) =>
             p.connectable && p.connect_via === "pairing" ? (
-              <Link key={p.id} to={`/connect/${p.id}`} className="btn-primary w-full py-3">
-                Link {p.label} by QR code
-              </Link>
+              <div key={p.id} className="space-y-3">
+                <Relink platform={p.id} label={p.label} />
+                <Link to={`/connect/${p.id}`} className="btn-primary w-full py-3">
+                  Link a new {p.label} number by QR code
+                </Link>
+              </div>
             ) : p.connectable ? (
               // Plain anchor — the server-side redirect handles everything
               <a key={p.id} href={`/api/${p.id}/authorize`} className="btn-primary w-full py-3">

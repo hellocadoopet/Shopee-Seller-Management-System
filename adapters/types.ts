@@ -120,7 +120,10 @@ export interface ConnectCapability {
 
 /** Link a device by scanning a QR code on screen (WhatsApp) — the alternative to `connect`. */
 export interface PairingCapability {
-  start(label?: string): Promise<{ pairingId: string }>;
+  /** `relinkExternalId`: re-link a logged-out shop into its existing account (same phone; chats kept). */
+  start(label?: string, relinkExternalId?: string): Promise<{ pairingId: string }>;
+  /** External ids of shops that lost their link and need a fresh QR scan. */
+  relinkable(): Promise<string[]>;
   /** Poll while the QR is shown. On "connected" the shop already exists. */
   status(pairingId: string): Promise<PairingStatus>;
   cancel(pairingId: string): Promise<void>;

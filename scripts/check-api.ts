@@ -412,6 +412,22 @@ const ok = (name: string) => results.push(`  ✓ ${name}`);
   assert.equal((await post("/api/shopee/pairings", {})).status, 400, "Shopee connects by OAuth, not QR");
   ok("pairing: start (label trimmed) → QR poll → expired maps to 'failed'; cancel; Shopee refuses QR pairing");
 }
+{
+  assert.deepEqual((await call("/api/whatsapp/relinkable")).data, { shops: [] }, "nothing to re-link while connected");
+  const acc = tables.wa_accounts!.find((x) => x.id === "acc-1")!;
+  acc.status = "logged_out";
+  try {
+    assert.deepEqual((await call("/api/whatsapp/relinkable")).data, { shops: [{ shop_id: "uuid-wa", shop_name: "Cadoopet WhatsApp" }] });
+    const r = await post("/api/whatsapp/pairings", { shop_id: "uuid-wa", label: "ignored" });
+    assert.equal(r.status, 200);
+    assert.deepEqual(workerCalls.at(-1)!.body, { label: "ignored", account_id: "acc-1" }, "worker told to reuse the account");
+    assert.equal((await post("/api/whatsapp/pairings", { shop_id: "uuid-shopee" })).status, 404, "a Shopee shop can't be re-linked by QR");
+    assert.equal((await post("/api/whatsapp/pairings", { shop_id: "nope" })).status, 404, "unknown shop");
+  } finally {
+    acc.status = "connected";
+  }
+  ok("re-link: logged-out numbers listed; shop_id → worker gets its account_id; other platform's / unknown shop → 404");
+}
 
 // ─── MOCK_CHAT, overview, token refresh ───
 

@@ -964,6 +964,79 @@ await test("directory table missing (migration 003 not run) → live + history m
   }
 });
 
+// ─── Re-link a logged-out number ───
+
+const pairPost = (body: unknown) =>
+  app.request("/pairings", { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify(body) });
+
+/** A number that was linked, then logged out, with one stored chat. */
+function seedLoggedOut(phone: string) {
+  const shop = { id: crypto.randomUUID(), platform: "whatsapp", external_id: crypto.randomUUID(), shop_name: "Cadoo Sales", disconnected_at: null };
+  db.shops!.push(shop);
+  const id = shop.external_id;
+  db.wa_accounts!.push({ id, shop_id: shop.id, status: "logged_out", phone_number: phone });
+  const contact = { id: crypto.randomUUID(), account_id: id, jid: "60177000001@s.whatsapp.net", routing_jid: "60177000001@s.whatsapp.net", name: "Old Friend", saved_name: null, phone_number: "60177000001" };
+  db.wa_contacts!.push(contact);
+  const conv = { id: crypto.randomUUID(), account_id: id, contact_id: contact.id, unread_count: 0, last_message_at: new Date(1000).toISOString(), last_message_preview: "old" };
+  db.wa_conversations!.push(conv);
+  db.wa_messages!.push({ id: crypto.randomUUID(), conversation_id: conv.id, account_id: id, wa_message_id: "OLD-1", direction: "in", type: "text", body: "old", created_at: new Date(1000).toISOString() });
+  return { id, shopId: shop.id, convId: conv.id };
+}
+
+await test("re-link: same phone → reuses the account + shop, keeps chats, re-sync de-duplicates", async () => {
+  const { id, shopId: sid, convId } = seedLoggedOut("60177777777");
+  mkdirSync(join(sessionsDir, id), { recursive: true });
+  writeFileSync(join(sessionsDir, id, "stale.json"), "{}"); // the dead login from before
+  const r = await pairPost({ label: "ignored", account_id: id });
+  eq(r.status, 200, "POST status");
+  eq(((await r.json()) as { pairing_id: string }).pairing_id, id, "pairing id = existing account id");
+  assert(!existsSync(join(sessionsDir, id, "stale.json")), "old login folder cleared");
+  const s = latest(id);
+  s.connect("60177777777");
+  // The fresh sync re-sends a message we already have, plus a new one.
+  s.emit("history", [
+    env({ waMessageId: "OLD-1", routingJid: "60177000001@s.whatsapp.net", body: "old", isHistory: true, timestamp: new Date(1000) }),
+    env({ waMessageId: "NEW-1", routingJid: "60177000001@s.whatsapp.net", body: "while logged out", isHistory: true, timestamp: new Date(5000) }),
+  ]);
+  await settle(id);
+  const st = (await (await app.request(`/pairings/${id}`, { headers: auth })).json()) as { state: string; shop_id?: string };
+  eq(st.state, "connected", "connected");
+  eq(st.shop_id, sid, "same shop");
+  eq(rows("shops", (x) => x.external_id === id).length, 1, "no second shop");
+  eq(rows("shops", (x) => x.id === sid)[0]!.shop_name, "Cadoo Sales", "keeps its name (label ignored)");
+  eq(rows("wa_accounts", (x) => x.id === id)[0]!.status, "connected", "status connected");
+  eq(rows("wa_contacts", (x) => x.account_id === id).length, 1, "same contact");
+  eq(rows("wa_messages", (x) => x.conversation_id === convId).length, 2, "old message kept once + the new one");
+});
+
+await test("re-link scanned by a different phone → refused, account stays logged out, nothing written", async () => {
+  const { id } = seedLoggedOut("60188880000");
+  const before = db.wa_messages!.length;
+  await pairPost({ account_id: id });
+  const s = latest(id);
+  s.connect("60199990000"); // someone else's phone
+  s.emit("history", [env({ routingJid: "60166000000@s.whatsapp.net", isHistory: true })]);
+  await settle(id);
+  const st = (await (await app.request(`/pairings/${id}`, { headers: auth })).json()) as { state: string; reason?: string };
+  eq(st.state, "failed", "failed");
+  assert(st.reason?.includes("+60188880000"), `reason names the right number: ${st.reason}`);
+  eq(rows("wa_accounts", (x) => x.id === id)[0]!.status, "logged_out", "still logged out");
+  eq(db.wa_messages!.length, before, "the other phone's history was not stored");
+  assert(s.stopped, "other phone's session stopped");
+});
+
+await test("re-link refused for a still-linked or unknown account; a second click replaces the first QR", async () => {
+  eq((await pairPost({ account_id: accountId })).status, 409, "connected account → 409");
+  eq((await pairPost({ account_id: crypto.randomUUID() })).status, 404, "unknown → 404");
+  eq((await pairPost({ account_id: "not-a-uuid" })).status, 404, "garbage id → 404");
+  const { id } = seedLoggedOut("60155550000");
+  await pairPost({ account_id: id });
+  const first = latest(id);
+  await pairPost({ account_id: id });
+  const second = latest(id);
+  assert(first !== second && first.stopped, "first QR session stopped, a fresh one started");
+});
+
 await test("parse: contact / history-chat records → identities (device suffix dropped, groups ignored)", async () => {
   const a = identityOfContact({ id: "6011:7@s.whatsapp.net", lid: "123@lid", name: "Joo Hing", notify: "joohing" })!;
   eq(a.pn, "6011@s.whatsapp.net", "device suffix dropped");

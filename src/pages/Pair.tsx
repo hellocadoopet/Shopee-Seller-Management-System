@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useParams, useSearchParams } from "react-router";
 import { ArrowLeft } from "lucide-react";
 import { errorText } from "../lib/useFetch";
 
@@ -15,6 +15,8 @@ const POLL_MS = 2000; // QR codes rotate about every 20s; polling picks up each 
 /** Link a number by QR code, like WhatsApp Web: start → show the rotating QR → done when the phone scans it. */
 export default function PairPage() {
   const platform = useParams().platform!;
+  // ?relink=<shop_id>: re-link a number that was logged out, into its existing account (chats kept).
+  const relink = useSearchParams()[0].get("relink");
   const [label, setLabel] = useState("");
   const [pairingId, setPairingId] = useState<string | null>(null);
   const [status, setStatus] = useState<PairingStatus | null>(null);
@@ -28,7 +30,7 @@ export default function PairPage() {
       const r = await fetch(`/api/${platform}/pairings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ label }),
+        body: JSON.stringify(relink ? { shop_id: relink } : { label }),
       });
       const d = (await r.json()) as { pairing_id?: string; error?: string };
       if (!r.ok || !d.pairing_id) throw new Error(d.error ?? "couldn't start pairing");
@@ -84,20 +86,26 @@ export default function PairPage() {
   return (
     <main className="min-h-screen flex items-center justify-center px-4">
       <div className="max-w-md w-full bg-white rounded-xl border border-gray-200 p-6 sm:p-8 text-center">
-        <h1 className="text-2xl font-semibold mb-2">Link a WhatsApp number</h1>
+        <h1 className="text-2xl font-semibold mb-2">{relink ? "Re-link your WhatsApp number" : "Link a WhatsApp number"}</h1>
 
         {!pairingId || failed ? (
           <>
             <p className="text-sm text-gray-600 mb-6">
-              {failed ? status.reason ?? "Pairing failed." : "Give this number a name, then scan the QR code with that phone."}
+              {failed
+                ? status.reason ?? "Pairing failed."
+                : relink
+                  ? "Scan the QR code with the SAME phone as before. Its chats stay; anything missed while it was logged out syncs back in."
+                  : "Give this number a name, then scan the QR code with that phone."}
             </p>
-            <input
-              value={label}
-              onChange={(e) => setLabel(e.target.value)}
-              placeholder="Name (optional), e.g. Cadoopet Sales"
-              aria-label="Name for this number"
-              className="input w-full py-2 mb-3"
-            />
+            {!relink && (
+              <input
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                placeholder="Name (optional), e.g. Cadoopet Sales"
+                aria-label="Name for this number"
+                className="input w-full py-2 mb-3"
+              />
+            )}
             <button
               onClick={() => {
                 setPairingId(null);

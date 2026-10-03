@@ -19,9 +19,11 @@ export const whatsapp: PlatformAdapter = {
   tokenless: true, // the worker holds each number's session; nothing stored in shop_tokens
 
   pairing: {
-    async start(label) {
-      return { pairingId: (await worker.startPairing({ label })).pairing_id };
+    async start(label, relinkExternalId) {
+      return { pairingId: (await worker.startPairing({ label, account_id: relinkExternalId })).pairing_id };
     },
+    // Logged out on the phone (or its login was lost): the worker can't reconnect these by itself.
+    relinkable: store.loggedOutAccounts,
     async status(pairingId) {
       try {
         const s = await worker.getPairing(pairingId);

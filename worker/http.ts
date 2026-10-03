@@ -10,7 +10,7 @@ import type {
 } from "../adapters/whatsapp/contract.js";
 import { logger } from "./logger.js";
 import { isDirectChat } from "./wa/parse.js";
-import type { SessionManager } from "./wa/manager.js";
+import { PairingError, type SessionManager } from "./wa/manager.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -39,7 +39,14 @@ export function createApp({ manager, secret }: { manager: SessionManager; secret
   app.post("/pairings", async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as StartPairingRequest;
     const label = typeof body.label === "string" ? body.label : undefined;
-    return c.json<StartPairingResponse>({ pairing_id: await manager.startPairing(label) });
+    const relink = typeof body.account_id === "string" ? body.account_id : undefined;
+    if (relink !== undefined && !UUID.test(relink)) return c.json({ error: "unknown account" }, 404);
+    try {
+      return c.json<StartPairingResponse>({ pairing_id: await manager.startPairing(label, relink) });
+    } catch (e) {
+      if (e instanceof PairingError) return c.json({ error: e.message }, e.status);
+      throw e;
+    }
   });
 
   app.get("/pairings/:id", (c) => {

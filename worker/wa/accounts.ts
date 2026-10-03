@@ -42,6 +42,16 @@ export async function listResumableAccounts(): Promise<Array<{ id: string; statu
   return check(await supabase.from("wa_accounts").select("id, status").neq("status", "logged_out")) ?? [];
 }
 
+/** A number's account with its shop name — for re-linking it. Null if unknown. */
+export async function getAccount(accountId: string): Promise<{ status: WaAccountStatus; phoneNumber: string | null; shopName: string | null } | null> {
+  const acc = check(
+    await supabase.from("wa_accounts").select("status, phone_number, shop_id").eq("id", accountId).maybeSingle(),
+  ) as { status: WaAccountStatus; phone_number: string | null; shop_id: string } | null;
+  if (!acc) return null;
+  const shop = check(await supabase.from("shops").select("shop_name").eq("id", acc.shop_id).maybeSingle()) as { shop_name: string | null } | null;
+  return { status: acc.status, phoneNumber: acc.phone_number, shopName: shop?.shop_name ?? null };
+}
+
 export async function accountExists(accountId: string): Promise<boolean> {
   const row = check(await supabase.from("wa_accounts").select("id").eq("id", accountId).maybeSingle());
   return !!row;

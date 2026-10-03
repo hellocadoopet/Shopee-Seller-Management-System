@@ -89,6 +89,12 @@ export interface WaMessageRow {
 /** POST /pairings — start pairing a new number. */
 export interface StartPairingRequest {
   label?: string; // becomes the shop name; defaults to the phone number once known
+  /**
+   * Re-link: the wa_accounts.id of a number that was logged out. The new session reuses that account,
+   * so its chats stay and the fresh sync de-duplicates against them. Must be scanned by the same phone,
+   * else the pairing fails. 404 unknown account, 409 if it's still linked.
+   */
+  account_id?: string;
 }
 export interface StartPairingResponse {
   pairing_id: string;
